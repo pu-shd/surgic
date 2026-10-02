@@ -1,0 +1,48 @@
+# surgic configuration. Copy to config/surgic.toml and edit.
+
+[network]
+smb_share_ip = "10.0.0.5"            # the ONLY host pf permits (TCP 445); by IP, no DNS
+capture_dir = "/Volumes/RAMDisk/audit"
+probe_ip = "192.0.2.1"               # TEST-NET-1; the egress probe to it must be blocked
+
+[storage]
+ramdisk_name = "RAMDisk"
+ramdisk_size_gb = 16
+input_share = "//svc_surgic@SMB_HOST/restricted"   # mounted read-only
+output_share = "//svc_surgic@SMB_HOST/sanitized"   # cleaned docs, manifests, evidence
+input_mount = "~/.surgic/mnt/in"
+output_mount = "~/.surgic/mnt/out"
+record_input_paths = false           # keep false: file names can be sensitive
+
+[llm]
+backend = "llamacpp"                 # llamacpp | ollama | mlx
+model_path = "/opt/models/Llama-3.3-70B-Instruct-Q5_K_M.gguf"  # ~50 GB; ollama: model tag; mlx: model dir
+model_sha256 = []                    # REQUIRED allowlist; provision.zsh prints the value
+host = "127.0.0.1"
+port = 8088
+n_ctx = 16384
+chunk_chars = 6000
+chunk_overlap = 400
+temperature = 0.0
+max_retries = 2
+batch_size = 1                       # model unloaded after every batch (1 = every document)
+
+[detect]
+spacy_model = "en_core_web_trf"
+spacy_fallback = "en_core_web_lg"
+presidio_score_threshold = 0.5
+patterns_file = ""                   # site regexes (YAML), merged over built-ins by name
+use_hyperscan = true
+
+[preflight]
+allowed_listeners = []               # process names permitted to listen on non-loopback
+require_wifi_off = true
+require_bluetooth_off = true
+verify_model_hash = true
+
+[audit]
+keychain_service = "com.surgic.manifest-signing"
+keychain_account = "surgic"
+gitleaks_binary = "gitleaks"
+trufflehog_binary = "trufflehog"
+require_secret_scanners = true

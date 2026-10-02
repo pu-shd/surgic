@@ -1,0 +1,176 @@
+"""Planted-secret leak tests: every value must be absent from every rendering
+of every output artifact, and redaction must have actually happened."""
+from __future__ import annotations
+
+import shutil
+import zipfile
+
+import openpyxl
+import pymupdf
+import pytest
+
+from fixtures import make
+from surgic.audit.postscan import pdf_raw_text, postscan, zip_raw_text
+from surgic.config import LLMConfig
+from surgic.detect import propagate
+from surgic.detect.contextual import contextual_spans
+from surgic.detect.mask import build
+from surgic.detect.spans import merge
+from surgic.extract import extract
+from surgic.extract.convert import find_soffice
+from surgic.llm.mock import MockBackend
+from surgic.redact import render
+
+
+def sanitize(path, phase_a, ocr, tmp_path):
+    doc = extract(str(path), "d", str(tmp_path / "conv"), ocr)
+    a = propagate(doc.text, phase_a.find(doc.text))
+    b = MockBackend(LLMConfig(backend="mock"), terms=[t.split("=", 1) for t in make.MOCK_TERMS.split(";")])
+    b.start()
+    bs, stats, _ = contextual_spans(build(doc.text, a), b, 6000, 400)
+    spans = merge(propagate(doc.text, a + bs))
+    res = render(doc, spans, str(tmp_path / "out"), "d")
+    return doc, spans, res, stats
+
+
+def all_renderings(primary: str, sidecar: str, ocr) -> dict[str, str]:
+    from surgic.audit.postscan import renderings
+    r = renderings(primary, sidecar, ocr)
+    if primary.endswith(".xlsx"):
+        r["raw"] = zip_raw_text(primary)
+    with open(primary, "rb") as f:
+        r["bytes"] = f.read().decode("latin-1")
+    return r
+
+
+def assert_no_leaks(texts: dict[str, str], values):
+    leaks = {(name, v) for name, t in texts.items() for v in values if v in t}
+    assert not leaks, f"leaked: {sorted(leaks)}"
+
+
+def test_text_pdf(phase_a, ocr, tmp_path):
+    src = make.make_text_pdf(tmp_path / "memo.pdf")
+    doc, spans, res, stats = sanitize(src, phase_a, ocr, tmp_path)
+    assert all(v in doc.text for v in make.ALL_VALUES), "fixture extraction incomplete"
+    assert res.regions >= len(make.ALL_VALUES)
+    assert stats.findings >= 2 and stats.relocated >= 1  # mock gives loose offsets
+    texts = all_renderings(res.primary, res.sidecar, ocr)
+    assert_no_leaks(texts, make.MUST_NOT_LEAK)
+    pdf = pymupdf.open(res.primary)
+    content_keys = ("title", "author", "subject", "keywords", "creator", "producer")
+    assert all(not pdf.metadata.get(k) for k in content_keys), pdf.metadata
+    assert not pdf.get_xml_metadata()
+    assert list(pdf[0].annots()) == [] and pdf.embfile_count() == 0
+    # Unrelated words survive (redaction is targeted, not a blank page).
+    assert "renewal" in texts["primary"] and "memo" in texts["primary"]
+
+
+def test_scanned_pdf_ocr(phase_a, ocr, tmp_path):
+    src = make.make_scanned_pdf(tmp_path / "scan.pdf")
+    doc, spans, res, _ = sanitize(src, phase_a, ocr, tmp_path)
+    assert doc.ocr_pages == 1
+    assert make.STRUCTURED["ssn"] in doc.text and make.STRUCTURED["email"] in doc.text
+    assert res.regions > 5
+    texts = all_renderings(res.primary, res.sidecar, ocr)
+    # Values the OCR engine recognized exactly must be gone from the re-OCR'd output.
+    recognized = [v for v in make.MUST_NOT_LEAK if v in doc.text]
+    assert len(recognized) >= 6
+    assert_no_leaks(texts, recognized)
+
+
+def test_png_image(phase_a, ocr, tmp_path):
+    src = make.make_png(tmp_path / "wb.png")
+    doc, spans, res, _ = sanitize(src, phase_a, ocr, tmp_path)
+    assert res.primary.endswith(".pdf") and res.regions > 5
+    texts = all_renderings(res.primary, res.sidecar, ocr)
+    assert_no_leaks(texts, [v for v in make.MUST_NOT_LEAK if v in doc.text] + [make.PERSON])
+
+
+def test_xlsx_all_parts(phase_a, ocr, tmp_path):
+    src = make.make_xlsx(tmp_path / "p.xlsx")
+    doc, spans, res, _ = sanitize(src, phase_a, ocr, tmp_path)
+    assert res.primary.endswith(".xlsx") and res.regions > 5
+    texts = all_renderings(res.primary, res.sidecar, ocr)
+    values = [make.PERSON, make.STRUCTURED["ssn"], make.STRUCTURED["email"], make.STRUCTURED["card"],
+              make.STRUCTURED["ip"], make.STRUCTURED["emp"], make.STRUCTURED["dcn"],
+              make.STRUCTURED["codename"], make.STRUCTURED["marker"], make.CONTEXTUAL["client"]]
+    assert_no_leaks(texts, values)
+    wb = openpyxl.load_workbook(res.primary)
+    assert wb.properties.creator in ("", None) and not wb.properties.title
+    assert len(wb.worksheets) == 2  # hidden sheet kept but redacted and renamed
+    assert wb.worksheets[1].title == "Sheet2"
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                assert c.comment is None and c.data_type != "f"
+    with zipfile.ZipFile(res.primary) as z:
+        assert not [n for n in z.namelist() if "comment" in n.lower() or "vba" in n.lower()]
+    assert wb.worksheets[0]["A1"].value == "Name"  # unrelated cells intact
+
+
+def test_txt(phase_a, ocr, tmp_path):
+    src = make.make_txt(tmp_path / "n.txt")
+    doc, spans, res, _ = sanitize(src, phase_a, ocr, tmp_path)
+    out = open(res.primary).read()
+    assert_no_leaks({"txt": out}, make.MUST_NOT_LEAK)
+    assert "[REDACTED:US_SSN]" in out
+
+
+@pytest.mark.requires_tool
+@pytest.mark.skipif(find_soffice() is None, reason="LibreOffice (soffice) not installed; runs in Docker")
+def test_docx_via_pdf(phase_a, ocr, tmp_path):
+    src = make.make_docx(tmp_path / "l.docx")
+    doc, spans, res, _ = sanitize(src, phase_a, ocr, tmp_path)
+    assert res.primary.endswith(".pdf") and res.regions > 5
+    texts = all_renderings(res.primary, res.sidecar, ocr)
+    assert_no_leaks(texts, make.MUST_NOT_LEAK)
+
+
+def test_postscan_quarantines_unredacted_output(phase_a, ocr, tmp_path, fake_scanners):
+    src = make.make_text_pdf(tmp_path / "memo.pdf")
+    sidecar = tmp_path / "side.txt"
+    sidecar.write_text(make.PARAGRAPH)
+    known = set(make.ALL_VALUES)
+    rep = postscan(str(src), str(sidecar), known, phase_a, ocr, fake_scanners, str(tmp_path))
+    assert not rep.passed
+    for check in ("known_values:primary", "known_values:sidecar", "known_values:second_parser",
+                  "phase_a:sidecar", "gitleaks", "trufflehog"):
+        assert rep.checks.get(check, 0) > 0, check
+    assert rep.rules.get("gitleaks:aws-access-token", 0) >= 1
+    pub = rep.public()
+    assert "new_values" not in pub and not any(v in str(pub) for v in make.ALL_VALUES)
+
+
+def test_postscan_passes_clean_output(phase_a, ocr, tmp_path, real_or_fake_scanners):
+    src = make.make_text_pdf(tmp_path / "memo.pdf")
+    doc, spans, res, _ = sanitize(src, phase_a, ocr, tmp_path)
+    known = {doc.text[s.start:s.end] for s in spans}
+    rep = postscan(res.primary, res.sidecar, known, phase_a, ocr, real_or_fake_scanners, str(tmp_path))
+    assert rep.passed, rep.public()
+    assert rep.checks["renderings"] == 4
+    assert rep.checks.get("gitleaks_ran") == 1 and rep.checks.get("trufflehog_ran") == 1
+
+
+@pytest.mark.requires_tool
+@pytest.mark.skipif(not (shutil.which("gitleaks") and shutil.which("trufflehog")),
+                    reason="real gitleaks/trufflehog not installed; runs in Docker")
+def test_real_scanners_flag_aws_key(tmp_path, regex_only):
+    from surgic.audit.postscan import ScanReport, SecretScanners
+    d = tmp_path / "scan"
+    d.mkdir()
+    # Fabricated credential assembled at runtime so no secret-like literal is in source.
+    import random
+    rng = random.Random(7)
+    alnum = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    key_id = "AKIA" + "".join(rng.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") for _ in range(16))
+    secret = "".join(rng.choice(alnum) for _ in range(40))
+    (d / "a.txt").write_text(f"aws_access_key_id = {key_id}\naws_secret_access_key = {secret}\n")
+    rep = ScanReport()
+    SecretScanners("gitleaks", "trufflehog", True).scan_dir(str(d), rep)
+    assert not rep.passed and rep.checks.get("gitleaks", 0) >= 1
+
+
+def test_raw_pdf_text_includes_metadata(tmp_path):
+    src = make.make_text_pdf(tmp_path / "memo.pdf")
+    raw = pdf_raw_text(str(src))
+    assert make.PERSON in raw  # sanity: the raw extractor really sees metadata

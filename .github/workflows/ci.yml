@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  docker-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build test image
+        run: docker build -f docker/Dockerfile.test -t surgic-tests:latest .
+      - name: Run tests (no network)
+        run: docker run --rm --network none --tmpfs /tmp:exec surgic-tests:latest
+
+  macos-native:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tools
+        run: brew install tesseract gitleaks trufflehog
+      - name: Native tests
+        env:
+          SURGIC_MIN_TESTS: "115"
+        run: |
+          python3.12 -m venv .venv
+          .venv/bin/pip install -q --upgrade pip
+          .venv/bin/pip install -q -e '.[dev,ocr-vision,hyperscan]'
+          zsh scripts/test.zsh

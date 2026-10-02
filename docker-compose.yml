@@ -1,0 +1,11 @@
+services:
+  tests:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.test
+    image: surgic-tests:latest
+    # Prove the suite needs no network at all.
+    network_mode: "none"
+    read_only: false
+    tmpfs:
+      - /tmp:exec

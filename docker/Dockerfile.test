@@ -1,0 +1,45 @@
+# Containerized test suite (Linux). macOS-only facilities (Vision, Keychain,
+# hdiutil, pf) are exercised through mocks here and natively by scripts/test.zsh.
+FROM python:3.12-slim-bookworm
+
+ARG GITLEAKS_VERSION=8.30.1
+ARG TRUFFLEHOG_VERSION=3.97.9
+ARG TARGETARCH
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      tesseract-ocr tesseract-ocr-eng libreoffice-writer-nogui libreoffice-calc-nogui \
+      curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) GL=x64;   TH=amd64 ;; \
+      arm64) GL=arm64; TH=arm64 ;; \
+      *) echo "unsupported arch ${TARGETARCH}"; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${GL}.tar.gz" \
+      | tar -xz -C /usr/local/bin gitleaks; \
+    curl -fsSL "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_linux_${TH}.tar.gz" \
+      | tar -xz -C /usr/local/bin trufflehog; \
+    gitleaks version; trufflehog --version
+
+WORKDIR /app
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" PIP_DISABLE_PIP_VERSION_CHECK=1
+
+COPY pyproject.toml ./
+COPY src ./src
+RUN pip install --no-cache-dir -e '.[dev,hyperscan]' \
+ && python -m spacy download en_core_web_lg \
+ && python -m spacy download en_core_web_sm
+
+COPY config ./config
+COPY tests ./tests
+
+# Tests must never need the network; the suite's in-process guard enforces it.
+ENV SURGIC_TEST_SPACY=en_core_web_lg \
+    SURGIC_MIN_TESTS=120 \
+    HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+
+CMD ["python", "-m", "pytest", "-p", "no:cacheprovider", "-rs", "tests"]

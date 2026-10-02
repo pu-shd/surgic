@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.hypothesis/
+dist/
+build/
+config/surgic.toml
+wheelhouse/
+CLAUDE.md
+.claude/
