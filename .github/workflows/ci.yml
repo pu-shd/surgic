@@ -15,6 +15,25 @@ jobs:
       - name: Run tests (no network)
         run: docker run --rm --network none --tmpfs /tmp:exec surgic-tests:latest
 
+  security-brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zsh
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+      - name: Render brief to PDF
+        env:
+          CHROME_BIN: google-chrome
+        run: zsh scripts/build_brief.zsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: surgic-security-brief
+          path: |
+            docs/brief/surgic-security-brief.html
+            docs/brief/surgic-security-brief.pdf
+          if-no-files-found: error
+
   macos-native:
     runs-on: macos-14
     timeout-minutes: 60

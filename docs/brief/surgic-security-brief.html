@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>surgic Security Review Brief</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800&family=Roboto:ital,wght@0,400;0,500;0,700;1,400&family=Roboto+Mono:wght@400;500&display=swap">
+<style>
+/* Printable review brief. US Letter, one column, orange-accented section headings and callouts. */
+:root {
+  --brand: #e77500;          /* accent rules and bars */
+  --brand-text: #c1560e;     /* accessible orange for text on white */
+  --brand-tint: #fff7f2;
+  --brand-tint-2: #feecde;
+  --ink: #121212;
+  --ink-2: #333333;
+  --muted: #717171;
+  --rule: #d9d9d9;
+  --panel: #f7f7f7;
+  --ok: #2b6a3f;
+  --ok-tint: #e9f3ec;
+
+  --font-display: "Montserrat", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Roboto", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Roboto Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html { background: #ffffff; }
+body {
+  margin: 0;
+  background: #ffffff;
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
+  padding-inline: 16px;
+  padding-block: 0 48px;
+}
+.page { max-width: 820px; margin: 0 auto; }
+
+/* Masthead */
+.masthead {
+  border-top: 6px solid var(--brand);
+  padding-block: 28px 22px;
+  border-bottom: 1px solid var(--rule);
+  display: grid;
+  gap: 10px;
+}
+.kicker {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--brand-text);
+}
+h1, h2, h3 { font-family: var(--font-display); color: var(--ink); text-wrap: balance; margin: 0; }
+h1 { font-size: 34px; font-weight: 800; line-height: 1.15; letter-spacing: -0.01em; }
+h2 {
+  font-size: 21px; font-weight: 700; line-height: 1.25;
+  padding-bottom: 8px; border-bottom: 3px solid var(--brand);
+  display: inline-block;
+}
+h3 { font-size: 16px; font-weight: 700; }
+p { margin: 0; max-width: 70ch; }
+.lede { font-size: 17px; color: var(--ink-2); }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; color: var(--muted); }
+.status { display: flex; flex-wrap: wrap; gap: 8px; }
+.badge {
+  font-size: 12.5px; font-weight: 500; padding: 4px 10px; border-radius: 3px;
+  border: 1px solid transparent;
+}
+.badge.ok { background: var(--ok-tint); color: var(--ok); border-color: #c9e2d1; }
+.badge.warn { background: var(--brand-tint-2); color: #6d2e03; border-color: #f7c9a3; }
+
+section { display: grid; gap: 14px; padding-block: 26px 0; min-width: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.86em; }
+code { background: var(--panel); padding: 0.05em 0.35em; border-radius: 2px; overflow-wrap: anywhere; }
+
+/* Flow */
+.flow { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(7, 1fr); gap: 0; }
+.flow li {
+  position: relative; padding: 10px 10px 10px 12px; min-width: 0;
+  background: var(--panel); border-right: 2px solid #ffffff;
+  display: grid; gap: 2px; align-content: start;
+}
+.flow li.edge { background: var(--brand-tint-2); }
+.flow .k { font-family: var(--font-display); font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--brand-text); }
+.flow .v { font-size: 13px; font-weight: 500; line-height: 1.3; }
+.note { font-size: 13.5px; color: var(--ink-2); }
+
+/* Table */
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--rule); }
+thead th {
+  font-family: var(--font-display); font-size: 11.5px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ink); background: var(--panel); border-bottom: 2px solid var(--ink);
+}
+td:first-child { font-weight: 700; width: 21%; }
+td:last-child { width: 31%; }
+.zero { font-family: var(--font-mono); font-weight: 500; color: var(--ok); }
+.rule-line {
+  font-family: var(--font-mono); font-size: 12px; background: var(--panel);
+  border-left: 4px solid var(--ink); padding: 9px 12px; overflow-x: auto; white-space: pre;
+}
+.fine { font-size: 12.5px; color: var(--muted); }
+
+/* Verify */
+.cmd { background: var(--ink); color: #f7f7f7; border-radius: 3px; padding: 12px 14px; overflow-x: auto; }
+.cmd pre { margin: 0; font-family: var(--font-mono); font-size: 12px; white-space: pre; }
+.checks { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.checks li { font-size: 12.5px; padding: 3px 9px; border: 1px solid var(--rule); border-radius: 3px; }
+.checks li::before { content: "✓ "; color: var(--ok); font-weight: 700; }
+
+ul.plain { margin: 0; padding-left: 1.15em; display: grid; gap: 6px; max-width: 72ch; }
+
+/* Risks */
+ol.risks { margin: 0; padding: 0; list-style: none; counter-reset: r; display: grid; }
+ol.risks li {
+  counter-increment: r; display: grid; grid-template-columns: 28px 1fr; gap: 2px 10px;
+  padding-block: 10px; border-top: 1px solid var(--rule);
+}
+ol.risks li:first-child { border-top: 0; padding-top: 2px; }
+ol.risks li::before {
+  content: counter(r); font-family: var(--font-display); font-weight: 800; font-size: 15px; color: var(--brand-text);
+}
+ol.risks .body { display: grid; gap: 2px; min-width: 0; }
+.mit { font-size: 13px; color: var(--ink-2); }
+.mit b { color: var(--brand-text); font-weight: 700; }
+
+/* Asks */
+.asks { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding-top: 22px; }
+.callout { padding: 16px 18px; display: grid; gap: 10px; align-content: start; min-width: 0; }
+.callout.decide { background: var(--brand-tint); border-left: 6px solid var(--brand); }
+.callout.infra { background: var(--panel); border-left: 6px solid var(--ink); }
+.callout ol, .callout ul { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; font-size: 14px; }
+
+footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--muted); display: grid; gap: 2px; }
+a { color: var(--brand-text); }
+
+@media (max-width: 720px) {
+  .flow { grid-template-columns: 1fr 1fr; }
+  .flow li { border-right: 0; border-bottom: 2px solid #ffffff; }
+  .asks { grid-template-columns: 1fr; }
+  h1 { font-size: 28px; }
+}
+
+/* Print: US Letter, keep blocks intact */
+@page { size: Letter; margin: 0.6in 0.65in 0.65in; }
+@media print {
+  body { font-size: 9.5pt; line-height: 1.45; padding: 0; }
+  .page { max-width: none; }
+  .masthead { padding-block: 12px 14px; gap: 7px; }
+  h1 { font-size: 20pt; }
+  h2 { font-size: 12.5pt; padding-bottom: 5px; border-bottom-width: 2.5px; }
+  h3 { font-size: 10.5pt; }
+  .lede { font-size: 10.5pt; }
+  .badge { font-size: 8.5pt; padding: 2px 8px; }
+  .meta { font-size: 8.5pt; }
+  section { padding-top: 14px; gap: 8px; }
+  table { font-size: 8.8pt; }
+  th, td { padding: 5px 7px; }
+  thead th { font-size: 7.8pt; }
+  .flow li { padding: 7px 8px; }
+  .flow .v { font-size: 8.5pt; }
+  .flow .k { font-size: 7pt; }
+  .note, .fine, .mit { font-size: 8.5pt; }
+  .rule-line, .cmd pre { font-size: 8pt; }
+  .cmd { padding: 8px 10px; }
+  .checks li { font-size: 8.5pt; padding: 2px 7px; }
+  ul.plain { gap: 3px; }
+  ol.risks li { padding-block: 6px; grid-template-columns: 22px 1fr; }
+  ol.risks li::before { font-size: 11pt; }
+  .asks { padding-top: 12px; gap: 12px; }
+  ol.risks { grid-template-columns: 1fr 1fr; column-gap: 22px; }
+  ol.risks li:nth-child(2) { border-top: 0; padding-top: 2px; }
+  .callout { padding: 11px 13px; gap: 6px; }
+  .callout ol, .callout ul { font-size: 9pt; gap: 4px; }
+  footer { margin-top: 16px; font-size: 8pt; }
+  /* Keep small units whole; let sections flow across pages. */
+  tr, .callout, .flow, ol.risks li, .cmd, .rule-line, .masthead { break-inside: avoid; }
+  h2, h3 { break-after: avoid; }
+  .asks { break-inside: avoid; }
+  a { color: var(--ink); text-decoration: none; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
+</style>
+</head>
+<body>
+<main class="page">
+
+  <header class="masthead">
+    <div class="kicker">Security review brief</div>
+    <h1>surgic: local AI document redaction</h1>
+    <p class="lede">A pipeline that redacts restricted documents with a local AI model on one air-gapped Mac Studio. No cloud services are involved. Documents are read from a read-only SMB share, processed only in RAM, and written back to a second share with signed proof that nothing left the machine.</p>
+    <div class="status">
+      <span class="badge ok">Built and tested: about 130 automated tests, CI on macOS and network-disabled Linux</span>
+      <span class="badge warn">Not yet run on the target Mac Studio</span>
+    </div>
+    <div class="meta"><span>For InfoSec and Cloud Engineering review</span><span>October 2026</span></div>
+  </header>
+
+  <div class="asks">
+    <section class="callout decide" aria-labelledby="decide-h">
+      <h3 id="decide-h">Decisions requested from InfoSec</h3>
+      <ol>
+        <li>Accept the software-protected signing key for the pilot, or require the Secure Enclave option.</li>
+        <li>Approve the model, Qwen 3.6 27B (<code>qwen3.6:27b</code>), pinned to the exact weight digest recorded at provisioning.</li>
+        <li>Set the human-review sampling rate for released documents.</li>
+      </ol>
+    </section>
+    <section class="callout infra" aria-labelledby="infra-h">
+      <h3 id="infra-h">Requested from Cloud and Infrastructure</h3>
+      <ul>
+        <li>A read-only input share and a writable output share on one SMB host, reachable by IP.</li>
+        <li>A dedicated VLAN with a static IP for the Mac Studio, carrying only SMB.</li>
+        <li>A service account with access to both shares and nothing else.</li>
+        <li>Jamf: AirDrop, Handoff and AirPlay Receiver disabled; Wi-Fi and Bluetooth off; FileVault on.</li>
+      </ul>
+    </section>
+  </div>
+
+  <section aria-labelledby="flow-h">
+    <h2 id="flow-h">How a document moves</h2>
+    <ol class="flow">
+      <li class="edge"><span class="k">In</span><span class="v">SMB share, read-only</span></li>
+      <li><span class="k">Workspace</span><span class="v">RAM disk only</span></li>
+      <li><span class="k">Step 1</span><span class="v">Rules: regex and Presidio</span></li>
+      <li><span class="k">Step 2</span><span class="v">Local LLM on masked text</span></li>
+      <li><span class="k">Step 3</span><span class="v">Redact the file</span></li>
+      <li><span class="k">Step 4</span><span class="v">Re-scan the output</span></li>
+      <li class="edge"><span class="k">Out</span><span class="v">SMB share, only if clean</span></li>
+    </ol>
+    <p class="note">A document that fails the re-scan is quarantined. Nothing from it reaches the output share.</p>
+  </section>
+
+  <section aria-labelledby="controls-h">
+    <h2 id="controls-h">Controls and evidence</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Requirement</th><th scope="col">How it's enforced</th><th scope="col">Evidence on the output share</th></tr></thead>
+        <tbody>
+          <tr><td>No network egress</td>
+              <td>The firewall (pf) blocks everything except SMB to the one share host. Preflight checks that the loaded rules match exactly. A test probe to an outside address must be blocked.</td>
+              <td><code>egress_audit.pcap</code> holds <span class="zero">0 packets</span>; <code>pflog_blocked.pcap</code> shows the blocks</td></tr>
+          <tr><td>No data persistence</td>
+              <td>All working files live on a RAM disk, which is zero-filled and detached at the end. Core dumps are off and swap is encrypted.</td>
+              <td>Signed <code>closure.json</code> listing each teardown step and its exit code</td></tr>
+          <tr><td>No cross-document leakage</td>
+              <td>Model context is purged for every document, and the model is unloaded after each batch. An unload that can't be verified aborts the run.</td>
+              <td>Unload and reset counts in the manifest</td></tr>
+          <tr><td>Structured data never reaches the LLM</td>
+              <td>Regex and Presidio redact first. The LLM sees placeholders such as <code>[US_SSN_1]</code>, never the values.</td>
+              <td>Per-document counts in the manifest; values stored only as one-time HMACs</td></tr>
+          <tr><td>Output is actually clean</td>
+              <td>Output files are re-extracted and checked for leftover values, then re-run through the detectors, gitleaks and trufflehog.</td>
+              <td>Per-document scan results; SHA-256 of every input and output</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="rule-line">pass out quick inet proto tcp from any to &lt;SMB_HOST_IP&gt; port 445 flags S/SA keep state</div>
+    <p class="fine">The firewall's only pass rule, shown above. The manifest and closure record are signed (Ed25519). Logs contain no document text, and file names aren't recorded.</p>
+  </section>
+
+  <section aria-labelledby="verify-h">
+    <h2 id="verify-h">How to verify a run</h2>
+    <p>On a separate workstation, using your own copy of the public key:</p>
+    <div class="cmd"><pre>surgic verify manifests/&lt;run&gt;.manifest.json --pubkey pubkey.pem --outputs &lt;share&gt;
+surgic verify evidence/&lt;ts&gt;/closure.json      --pubkey pubkey.pem</pre></div>
+    <p><code>VERIFIED</code> confirms all of the following:</p>
+    <ul class="checks">
+      <li>Signatures are valid</li>
+      <li>Every output hash matches</li>
+      <li>Nothing quarantined was released</li>
+      <li>Egress capture holds 0 packets</li>
+      <li>Firewall logged blocks</li>
+      <li>RAM disk was wiped</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="fc-h">
+    <h2 id="fc-h">Fail-closed behavior</h2>
+    <ul class="plain">
+      <li>Any failed preflight check (firewall, radios, network listeners, RAM disk, read-only input, model hash) stops the run before a document is read.</li>
+      <li>Any error on a document quarantines it. Nothing from it is written.</li>
+      <li>Test-only shortcuts (mock model, file-based key, skipping preflight) each need an explicit opt-in flag.</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="risks-h">
+    <h2 id="risks-h">Residual risks</h2>
+    <ol class="risks">
+      <li><div class="body"><h3>The signing key is software-protected</h3><p>It's stored in the login Keychain, so someone with the user's login could export it.</p><p class="mit"><b>Mitigation available:</b> a Secure Enclave key via Jamf (in progress).</p></div></li>
+      <li><div class="body"><h3>LLM recall is imperfect</h3><p>Unstructured secrets depend on model quality. In testing, Qwen 3.6 27B caught contextual secrets in prose but missed a client name in a spreadsheet cell.</p><p class="mit"><b>Recommended:</b> human spot-checks when a new document type is introduced.</p></div></li>
+      <li><div class="body"><h3>Prompt injection</h3><p>A document could try to steer the model. The worst case is under-redaction, never exfiltration.</p></div></li>
+      <li><div class="body"><h3>OCR limits</h3><p>Text that OCR can't read, such as poor handwriting, can't be detected.</p></div></li>
+      <li><div class="body"><h3>Memory pressure could cause swapping</h3><p>Swap is encrypted with an ephemeral key, and the model (about 17 GB) leaves ample headroom.</p></div></li>
+      <li><div class="body"><h3>Layer-2 traffic isn't filtered by the firewall</h3><p>This covers ARP and IPv6 neighbor discovery.</p><p class="mit"><b>Requires:</b> a static IP on a dedicated VLAN.</p></div></li>
+    </ol>
+  </section>
+
+
+  <footer>
+    <span>Source: docs/INFOSEC.md and spec.md in the surgic repository.</span>
+    <span>Rebuild this brief and its PDF with <span class="mono">scripts/build_brief.zsh</span>.</span>
+  </footer>
+</main>
+</body>
+</html>

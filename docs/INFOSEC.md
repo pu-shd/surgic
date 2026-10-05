@@ -1,5 +1,7 @@
 # surgic: security review brief
 
+Printable version: [PDF](brief/surgic-security-brief.pdf) · [HTML](brief/surgic-security-brief.html)
+
 **What it is.** A pipeline that redacts restricted documents with a local AI
 model on one air-gapped Mac Studio. No cloud services are involved. Documents
 are read from a read-only SMB share, processed only in RAM, and written back to
@@ -66,5 +68,5 @@ logged blocks, and the RAM disk was wiped.
 ## Decisions requested from InfoSec
 
 1. Accept the software-protected signing key for the pilot, or require the Secure Enclave option.
-2. Approve the model, Qwen 3.6 27B (`qwen3.6:27b`), and its weight digest.
+2. Approve the model, Qwen 3.6 27B (`qwen3.6:27b`), pinned to the exact weight digest recorded at provisioning.
 3. Set the human-review sampling rate for released documents.
