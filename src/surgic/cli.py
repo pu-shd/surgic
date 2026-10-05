@@ -16,13 +16,15 @@ def _cfg(args):
 
 
 def _signer(cfg):
-    from .audit.signing import Signer, store_from_env
-    return Signer(store_from_env(cfg.audit.keychain_service, cfg.audit.keychain_account))
+    from .audit.signing import make_signer
+    return make_signer(cfg.audit)
 
 
 def cmd_keygen(args) -> int:
     from .audit.signing import Signer, store_from_env
     cfg = _cfg(args)
+    if cfg.audit.signer != "ed25519-keychain":
+        raise SafeError("keygen_not_applicable")  # Secure Enclave keys come from the ACME profile
     store = store_from_env(cfg.audit.keychain_service, cfg.audit.keychain_account)
     Signer.generate(store, overwrite=args.overwrite)
     print(Signer(store).fingerprint())
@@ -30,7 +32,7 @@ def cmd_keygen(args) -> int:
 
 
 def cmd_pubkey(args) -> int:
-    sys.stdout.buffer.write(_signer(_cfg(args)).public_pem())
+    sys.stdout.buffer.write(_signer(_cfg(args)).export_pem())
     return 0
 
 
@@ -105,16 +107,37 @@ def cmd_run(args) -> int:
 
 
 def cmd_verify(args) -> int:
-    from .audit.verify import verify_file
-    with open(args.pubkey, "rb") as f:
-        pem = f.read()
-    failures = verify_file(args.file, pem, args.outputs, args.closure, args.expect_model,
+    from .audit.verify import signer_summary, verify_file
+
+    def read(p):
+        if not p:
+            return None
+        with open(p, "rb") as f:
+            return f.read()
+
+    expect = {"serial_number": args.expect_serial} if args.expect_serial else None
+    failures = verify_file(args.file, read(args.pubkey), args.outputs, args.closure, args.expect_model,
+                           ca_pem=read(args.ca), expect=expect,
                            require_opaque_names=args.require_opaque_names)
+    print(json.dumps({"signer": signer_summary(args.file)}, sort_keys=True))
     if failures:
         for x in failures:
             print("FAIL", x)
         return 1
     print("VERIFIED")
+    return 0
+
+
+def cmd_jamf(args) -> int:
+    from . import jamf, jamf_profiles
+    cfg = _cfg(args)
+    if args.what == "sudoers":
+        sys.stdout.write(jamf.sudoers(cfg))
+    elif args.what == "pf-rules":
+        sys.stdout.write(jamf.pf_rules(cfg))
+    elif args.what == "profiles":
+        for path in jamf_profiles.write_all(cfg, args.out):
+            print(path)
     return 0
 
 
@@ -145,13 +168,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("verify", help="verify a signed manifest or closure")
     p.add_argument("file")
-    p.add_argument("--pubkey", required=True)
+    p.add_argument("--pubkey", help="pinned public key (Ed25519 or P-256 PEM)")
+    p.add_argument("--ca", help="issuing CA bundle (PEM) for Secure Enclave certificate chains")
+    p.add_argument("--expect-serial", help="require this attested device serial number")
     p.add_argument("--outputs", help="output share root (required for a manifest)")
     p.add_argument("--closure", help="closure.json of the airgap session (required for a manifest)")
     p.add_argument("--expect-model", help="model SHA-256 InfoSec approved; must match the manifest")
     p.add_argument("--require-opaque-names", action="store_true",
                    help="fail if the run released original (redacted) folder and file names")
     p.set_defaults(fn=cmd_verify)
+
+    p = with_cfg(sub.add_parser("jamf", help="generate Jamf deployment artifacts from config"))
+    p.add_argument("what", choices=["sudoers", "pf-rules", "profiles"])
+    p.add_argument("--out", default="jamf/generated", help="output directory for profiles")
+    p.set_defaults(fn=cmd_jamf)
     return ap
 
 

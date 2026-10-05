@@ -62,7 +62,7 @@ def up(cfg, r: Runner) -> dict:
     state["ramdisk_size_gb"] = st.ramdisk_size_gb
     _save(cfg, state)
     os.makedirs(st.workspace, exist_ok=True)
-    state["pf"] = firewall.load(r, net.smb_share_ip, net.smb_interface)
+    state["pf"] = firewall.load(r, net.smb_share_ip, net.smb_interface, managed=net.pf_rules_managed)
     _save(cfg, state)
     state["capture"] = egress_audit.start(r, net.smb_share_ip, cfg.capture_dir)
     _save(cfg, state)
@@ -166,7 +166,7 @@ def down(cfg, r: Runner, signer) -> str | None:
     path = None
     if output_ok:
         path, _ = write_signed(closure, evidence / "closure.json", signer)
-        (evidence / "pubkey.pem").write_bytes(signer.public_pem())
+        (evidence / signer.export_name).write_bytes(signer.export_pem())
     if wiped:
         smb.unmount(r, st.output_mount)
         state["active"] = False

@@ -28,7 +28,6 @@ from typing import Any
 
 from . import netguard
 from .audit.manifest import SCHEMA, sha256_file, write_signed
-from .audit.signing import Signer
 from .detect.contextual import llm_accept
 from .llm.guard import tripwire
 from .detect.spans import Span
@@ -151,7 +150,7 @@ def _strs(v: Any) -> list[str]:
 
 class Pipeline:
     def __init__(self, cfg, backend: LLMBackend, phase_a=None, ocr=None, scanners=None,
-                 signer: Signer | None = None, model_sha256: str = "", environment: dict | None = None,
+                 signer=None, model_sha256: str = "", environment: dict | None = None,
                  analyzer: WorkerClient | None = None, scanner: WorkerClient | None = None,
                  airgap: dict | None = None) -> None:
         self.cfg = cfg
@@ -451,7 +450,7 @@ class Pipeline:
         mdir = Path(output_dir, "manifests")
         mdir.mkdir(parents=True, exist_ok=True)
         mpath, _ = write_signed(manifest, mdir / f"{self.run_id}.manifest.json", self.signer)
-        (mdir / "pubkey.pem").write_bytes(self.signer.public_pem())
+        (mdir / self.signer.export_name).write_bytes(self.signer.export_pem())
         return mpath
 
     def _write_aborted(self, records: list[DocRecord], started: int, output_dir: str, code: str) -> None:

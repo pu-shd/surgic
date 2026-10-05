@@ -72,6 +72,56 @@ def bluetooth_off(r: Runner) -> bool:
     return bool(data.get("SPBluetoothDataType"))
 
 
+def installed_profile_ids(r: Runner) -> set[str] | str:
+    """Device-level configuration profile identifiers (requires root)."""
+    p = r.run(["profiles", "show", "-type", "configuration"], root=True, check=False)
+    out = (p.stdout or b"").decode("utf-8", errors="replace")
+    if p.returncode != 0:
+        return "profiles_failed"
+    return set(re.findall(r"profileIdentifier:\s*(\S+)", out))
+
+
+def profiles_present(r: Runner, required: list[str]) -> bool | str:
+    ids = installed_profile_ids(r)
+    if isinstance(ids, str):
+        return ids
+    missing = sorted(set(required) - ids)
+    return True if not missing else "missing_profiles:" + ",".join(missing)[:100]
+
+
+def no_vpn_connected(r: Runner) -> bool | str:
+    p = r.run(["scutil", "--nc", "list"], check=False)
+    if p.returncode != 0:
+        return "scutil_failed"
+    out = (p.stdout or b"").decode("utf-8", errors="replace")
+    connected = [ln for ln in out.splitlines() if "(Connected)" in ln or "(Connecting)" in ln]
+    return True if not connected else f"vpn_connected:{len(connected)}"
+
+
+def active_network_extensions(sysext_out: str) -> list[str]:
+    """Bundle IDs of activated+enabled system extensions in the network category."""
+    active, section = [], ""
+    for ln in sysext_out.splitlines():
+        if ln.startswith("---"):
+            # "--- com.apple.system_extension.network_extension (Go to 'System Settings ...')"
+            parts = ln.lstrip("- ").split()
+            section = parts[0] if parts else ""
+            continue
+        if section == "com.apple.system_extension.network_extension" and "[activated enabled]" in ln:
+            m = re.search(r"\s([A-Za-z0-9][\w.-]+)\s+\(", ln)
+            active.append(m.group(1) if m else "unknown")
+    return active
+
+
+def no_network_extensions(r: Runner, allowed: list[str]) -> bool | str:
+    p = r.run(["systemextensionsctl", "list"], check=False)
+    if p.returncode != 0:
+        return "systemextensionsctl_failed"
+    bad = [b for b in active_network_extensions((p.stdout or b"").decode("utf-8", errors="replace"))
+           if b not in allowed]
+    return True if not bad else "network_extensions:" + ",".join(sorted(bad))[:100]
+
+
 def swap_encrypted(r: Runner) -> bool:
     return "(encrypted)" in r.out(["sysctl", "vm.swapusage"], check=False)
 
@@ -95,6 +145,16 @@ def run_preflight(cfg, r: Runner, model_hash: Callable[[], str] | None = None) -
         return True if not problems else ",".join(problems)
 
     add("pf_airgap_ruleset", pf_ok)
+    if cfg.network.pf_rules_managed:
+        add("pf_rules_file_managed",
+            lambda: (lambda p: True if not p else ",".join(p))(
+                firewall.check_managed_file(cfg.network.smb_share_ip, cfg.network.smb_interface)))
+    if pf.required_profiles:
+        add("managed_profiles_installed", lambda: profiles_present(r, pf.required_profiles))
+    if pf.require_no_vpn:
+        add("no_vpn_connected", lambda: no_vpn_connected(r))
+    if pf.require_no_network_extensions:
+        add("no_network_extensions", lambda: no_network_extensions(r, pf.allowed_network_extensions))
 
     def listeners():
         # +c 0: full command names, so the allowlist is not matched on a

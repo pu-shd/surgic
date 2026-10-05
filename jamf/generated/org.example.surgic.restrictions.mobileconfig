@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadDisplayName</key>
+			<string>Restrictions</string>
+			<key>PayloadIdentifier</key>
+			<string>org.example.surgic.restrictions.applicationaccess</string>
+			<key>PayloadType</key>
+			<string>com.apple.applicationaccess</string>
+			<key>PayloadUUID</key>
+			<string>6A80BA96-F284-5BE2-81CB-BC5F05D55E6F</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>allowActivityContinuation</key>
+			<false/>
+			<key>allowAirDrop</key>
+			<false/>
+			<key>allowAirPlayIncomingRequests</key>
+			<false/>
+			<key>allowAssistant</key>
+			<false/>
+			<key>allowBluetoothModification</key>
+			<false/>
+			<key>allowCloudDesktopAndDocuments</key>
+			<false/>
+			<key>allowCloudDocumentSync</key>
+			<false/>
+			<key>allowCloudKeychainSync</key>
+			<false/>
+			<key>allowContentCaching</key>
+			<false/>
+			<key>allowDiagnosticSubmission</key>
+			<false/>
+			<key>allowExternalIntelligenceIntegrations</key>
+			<false/>
+			<key>allowUniversalControl</key>
+			<false/>
+			<key>allowWritingTools</key>
+			<false/>
+			<key>allowiPhoneMirroring</key>
+			<false/>
+			<key>forceOnDeviceOnlyDictation</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>BlockAllIncoming</key>
+			<true/>
+			<key>EnableFirewall</key>
+			<true/>
+			<key>EnableStealthMode</key>
+			<true/>
+			<key>PayloadDisplayName</key>
+			<string>Application Firewall</string>
+			<key>PayloadIdentifier</key>
+			<string>org.example.surgic.restrictions.firewall</string>
+			<key>PayloadType</key>
+			<string>com.apple.security.firewall</string>
+			<key>PayloadUUID</key>
+			<string>44B85EEF-97D9-550F-A229-94294AEA410E</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+		</dict>
+	</array>
+	<key>PayloadDisplayName</key>
+	<string>surgic: airgap restrictions</string>
+	<key>PayloadIdentifier</key>
+	<string>org.example.surgic.restrictions</string>
+	<key>PayloadOrganization</key>
+	<string>Example Org</string>
+	<key>PayloadRemovalDisallowed</key>
+	<true/>
+	<key>PayloadScope</key>
+	<string>System</string>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadUUID</key>
+	<string>D0A0008C-F835-550C-9CC2-13A75FB947BB</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+</dict>
+</plist>
