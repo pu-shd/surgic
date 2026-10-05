@@ -1,14 +1,13 @@
 # surgic
 
 Air-gapped, zero-retention document sanitization for a single Apple Silicon
-Mac Studio. It reads restricted documents from a read-only SMB share and
-redacts them in two phases: deterministic rules (Hyperscan/RE2 and Presidio),
-then contextual redaction by a local open-weight LLM (llama.cpp, Ollama or
-mlx-lm). It verifies the output files, then writes cleaned documents,
-Ed25519-signed manifests and egress evidence to a second SMB share.
+Mac Studio.
 
-See `spec.md` for requirements and `docs/INFOSEC.md` for the control mapping,
-the evidence it produces and the residual risks.
+Reads restricted documents from a read-only SMB share and redacts them in two phases: deterministic rules (Hyperscan/RE2 and Presidio), then contextual redaction by a local open-weight LLM (llama.cpp, Ollama or mlx-lm).
+
+It verifies the output files, writes cleaned documents, Ed25519-signed manifests and egress evidence to a second SMB share.
+
+See `spec.md` for requirements and `docs/INFOSEC.md` for the control mapping, the evidence it produces, and the residual risks.
 
 ## Supported inputs → outputs
 
@@ -23,7 +22,7 @@ the evidence it produces and the residual risks.
 ## Operator workflow
 
 ```zsh
-# 1. Online, once: install tools, venv, spaCy models, signing key, model hash
+# 1. Online, once: install tools, venv, [spaCy](https://github.com/explosion/spaCy) models, signing key, model hash
 scripts/provision.zsh /opt/models/Llama-3.3-70B-Instruct-Q5_K_M.gguf
 $EDITOR config/surgic.toml          # smb_share_ip, shares, model_path, model_sha256
 
