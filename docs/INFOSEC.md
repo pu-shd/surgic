@@ -5,7 +5,7 @@ model on one air-gapped Mac Studio. No cloud services are involved. Documents
 are read from a read-only SMB share, processed only in RAM, and written back to
 a second share with signed proof that nothing left the machine.
 
-**Status.** Implemented and tested: 127 automated tests, plus CI on macOS and
+**Status.** Implemented and tested: about 130 automated tests, plus CI on macOS and
 in a network-disabled Linux container. It has **not yet been run on the target
 Mac Studio.**
 
