@@ -45,9 +45,10 @@ logged blocks, and the RAM disk was wiped.
 
 ## Fail-closed behavior
 
-- Any preflight failure (firewall, radios, listeners, RAM disk, read-only input, model hash) stops the run before any document is read.
-- Any per-document error quarantines that document; nothing from it is written.
-- Test-only shortcuts (mock model, file-based key, skipping preflight) each require an explicit opt-in flag.
+- Preflight checks the firewall, radios, network listeners, RAM disk, read-only input and model hash.
+- Any failed check stops the run before a document is read.
+- Any error on a document quarantines it, and nothing from it is written.
+- Test-only shortcuts (mock model, file-based key, skipped preflight) each need an explicit opt-in flag.
 
 ## Residual risks
 

@@ -12,8 +12,8 @@
 :root {
   --brand: #e77500;          /* accent rules and bars */
   --brand-text: #c1560e;     /* accessible orange for text on white */
-  --brand-tint: #fff7f2;
-  --brand-tint-2: #feecde;
+  --brand-tint: #fffaf6;
+  --brand-tint-2: #fbf1e8;
   --ink: #121212;
   --ink-2: #333333;
   --muted: #717171;
@@ -43,7 +43,7 @@ body {
 
 /* Masthead */
 .masthead {
-  border-top: 6px solid var(--brand);
+  border-top: 4px solid var(--brand);
   padding-block: 28px 22px;
   border-bottom: 1px solid var(--rule);
   display: grid;
@@ -61,8 +61,7 @@ h1, h2, h3 { font-family: var(--font-display); color: var(--ink); text-wrap: bal
 h1 { font-size: 34px; font-weight: 800; line-height: 1.15; letter-spacing: -0.01em; }
 h2 {
   font-size: 21px; font-weight: 700; line-height: 1.25;
-  padding-bottom: 8px; border-bottom: 3px solid var(--brand);
-  display: inline-block;
+  padding-bottom: 6px; border-bottom: 1px solid var(--rule);
 }
 h3 { font-size: 16px; font-weight: 700; }
 p { margin: 0; max-width: 70ch; }
@@ -74,7 +73,7 @@ p { margin: 0; max-width: 70ch; }
   border: 1px solid transparent;
 }
 .badge.ok { background: var(--ok-tint); color: var(--ok); border-color: #c9e2d1; }
-.badge.warn { background: var(--brand-tint-2); color: #6d2e03; border-color: #f7c9a3; }
+.badge.warn { background: var(--brand-tint); color: #6d2e03; border-color: #f0d9c4; }
 
 section { display: grid; gap: 14px; padding-block: 26px 0; min-width: 0; }
 code, .mono { font-family: var(--font-mono); font-size: 0.86em; }
@@ -87,10 +86,11 @@ code { background: var(--panel); padding: 0.05em 0.35em; border-radius: 2px; ove
   background: var(--panel); border-right: 2px solid #ffffff;
   display: grid; gap: 2px; align-content: start;
 }
-.flow li.edge { background: var(--brand-tint-2); }
-.flow .k { font-family: var(--font-display); font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--brand-text); }
+.flow li.edge { background: #ececec; }
+.flow .k { font-family: var(--font-display); font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
 .flow .v { font-size: 13px; font-weight: 500; line-height: 1.3; }
 .note { font-size: 13.5px; color: var(--ink-2); }
+.oneline { max-width: none; }
 
 /* Table */
 .table-wrap { overflow-x: auto; }
@@ -105,18 +105,18 @@ td:last-child { width: 31%; }
 .zero { font-family: var(--font-mono); font-weight: 500; color: var(--ok); }
 .rule-line {
   font-family: var(--font-mono); font-size: 12px; background: var(--panel);
-  border-left: 4px solid var(--ink); padding: 9px 12px; overflow-x: auto; white-space: pre;
+  border-left: 3px solid var(--rule); padding: 9px 12px; overflow-x: auto; white-space: pre;
 }
 .fine { font-size: 12.5px; color: var(--muted); }
 
 /* Verify */
-.cmd { background: var(--ink); color: #f7f7f7; border-radius: 3px; padding: 12px 14px; overflow-x: auto; }
+.cmd { background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 3px; padding: 12px 14px; overflow-x: auto; }
 .cmd pre { margin: 0; font-family: var(--font-mono); font-size: 12px; white-space: pre; }
 .checks { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
 .checks li { font-size: 12.5px; padding: 3px 9px; border: 1px solid var(--rule); border-radius: 3px; }
 .checks li::before { content: "✓ "; color: var(--ok); font-weight: 700; }
 
-ul.plain { margin: 0; padding-left: 1.15em; display: grid; gap: 6px; max-width: 72ch; }
+ul.plain { margin: 0; padding-left: 1.15em; display: grid; gap: 6px; }
 
 /* Risks */
 ol.risks { margin: 0; padding: 0; list-style: none; counter-reset: r; display: grid; }
@@ -126,17 +126,17 @@ ol.risks li {
 }
 ol.risks li:first-child { border-top: 0; padding-top: 2px; }
 ol.risks li::before {
-  content: counter(r); font-family: var(--font-display); font-weight: 800; font-size: 15px; color: var(--brand-text);
+  content: counter(r); font-family: var(--font-display); font-weight: 700; font-size: 15px; color: var(--muted);
 }
-ol.risks .body { display: grid; gap: 2px; min-width: 0; }
+ol.risks .body { display: grid; gap: 2px; min-width: 0; align-content: start; }
 .mit { font-size: 13px; color: var(--ink-2); }
-.mit b { color: var(--brand-text); font-weight: 700; }
+.mit b { color: var(--ink); font-weight: 700; }
 
 /* Asks */
 .asks { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding-top: 22px; }
 .callout { padding: 16px 18px; display: grid; gap: 10px; align-content: start; min-width: 0; }
-.callout.decide { background: var(--brand-tint); border-left: 6px solid var(--brand); }
-.callout.infra { background: var(--panel); border-left: 6px solid var(--ink); }
+.callout.decide { background: var(--brand-tint); border-left: 3px solid var(--brand); }
+.callout.infra { background: var(--panel); border-left: 3px solid var(--muted); }
 .callout ol, .callout ul { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; font-size: 14px; }
 
 footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--rule); font-size: 12px; color: var(--muted); display: grid; gap: 2px; }
@@ -156,7 +156,7 @@ a { color: var(--brand-text); }
   .page { max-width: none; }
   .masthead { padding-block: 12px 14px; gap: 7px; }
   h1 { font-size: 20pt; }
-  h2 { font-size: 12.5pt; padding-bottom: 5px; border-bottom-width: 2.5px; }
+  h2 { font-size: 12.5pt; padding-bottom: 4px; }
   h3 { font-size: 10.5pt; }
   .lede { font-size: 10.5pt; }
   .badge { font-size: 8.5pt; padding: 2px 8px; }
@@ -181,6 +181,7 @@ a { color: var(--brand-text); }
   .callout { padding: 11px 13px; gap: 6px; }
   .callout ol, .callout ul { font-size: 9pt; gap: 4px; }
   footer { margin-top: 16px; font-size: 8pt; }
+  .oneline { white-space: nowrap; }
   /* Keep small units whole; let sections flow across pages. */
   tr, .callout, .flow, ol.risks li, .cmd, .rule-line, .masthead { break-inside: avoid; }
   h2, h3 { break-after: avoid; }
@@ -235,7 +236,7 @@ a { color: var(--brand-text); }
       <li><span class="k">Step 4</span><span class="v">Re-scan the output</span></li>
       <li class="edge"><span class="k">Out</span><span class="v">SMB share, only if clean</span></li>
     </ol>
-    <p class="note">A document that fails the re-scan is quarantined. Nothing from it reaches the output share.</p>
+    <p class="oneline note">A document that fails the re-scan is quarantined, and nothing from it reaches the output share.</p>
   </section>
 
   <section aria-labelledby="controls-h">
@@ -263,15 +264,16 @@ a { color: var(--brand-text); }
       </table>
     </div>
     <div class="rule-line">pass out quick inet proto tcp from any to &lt;SMB_HOST_IP&gt; port 445 flags S/SA keep state</div>
-    <p class="fine">The firewall's only pass rule, shown above. The manifest and closure record are signed (Ed25519). Logs contain no document text, and file names aren't recorded.</p>
+    <p class="oneline fine">Above: the firewall's only pass rule.</p>
+    <p class="oneline fine">Manifests and closure records are signed (Ed25519); logs hold no document text or file names.</p>
   </section>
 
   <section aria-labelledby="verify-h">
     <h2 id="verify-h">How to verify a run</h2>
-    <p>On a separate workstation, using your own copy of the public key:</p>
+    <p class="oneline">On a separate workstation, using your own copy of the public key:</p>
     <div class="cmd"><pre>surgic verify manifests/&lt;run&gt;.manifest.json --pubkey pubkey.pem --outputs &lt;share&gt;
 surgic verify evidence/&lt;ts&gt;/closure.json      --pubkey pubkey.pem</pre></div>
-    <p><code>VERIFIED</code> confirms all of the following:</p>
+    <p class="oneline"><code>VERIFIED</code> confirms all of the following:</p>
     <ul class="checks">
       <li>Signatures are valid</li>
       <li>Every output hash matches</li>
@@ -285,9 +287,10 @@ surgic verify evidence/&lt;ts&gt;/closure.json      --pubkey pubkey.pem</pre></d
   <section aria-labelledby="fc-h">
     <h2 id="fc-h">Fail-closed behavior</h2>
     <ul class="plain">
-      <li>Any failed preflight check (firewall, radios, network listeners, RAM disk, read-only input, model hash) stops the run before a document is read.</li>
-      <li>Any error on a document quarantines it. Nothing from it is written.</li>
-      <li>Test-only shortcuts (mock model, file-based key, skipping preflight) each need an explicit opt-in flag.</li>
+      <li class="oneline">Preflight checks the firewall, radios, network listeners, RAM disk, read-only input and model hash.</li>
+      <li class="oneline">Any failed check stops the run before a document is read.</li>
+      <li class="oneline">Any error on a document quarantines it, and nothing from it is written.</li>
+      <li class="oneline">Test-only shortcuts (mock model, file-based key, skipped preflight) each need an explicit opt-in flag.</li>
     </ul>
   </section>
 
