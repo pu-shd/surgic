@@ -33,6 +33,10 @@ class OllamaBackend(ServerProcessBackend):
             "model": self.cfg.model_path,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "format": self.schema,
+            # Reasoning models (e.g. Qwen 3.x) otherwise spend the whole output
+            # budget "thinking" and return empty content. Thinking text would
+            # also be document-derived output the pipeline has no use for.
+            "think": False,
             "stream": False,
             "keep_alive": "10m",
             "options": {"temperature": self.cfg.temperature, "num_ctx": self.cfg.n_ctx},

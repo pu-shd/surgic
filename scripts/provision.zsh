@@ -1,7 +1,8 @@
 #!/bin/zsh
 # ONLINE provisioning of the Mac Studio (run BEFORE the machine is air-gapped).
 #
-#   scripts/provision.zsh <model-file-or-dir> [--wheelhouse]
+#   scripts/provision.zsh <ollama-tag | model-file | model-dir> [--wheelhouse]
+#   e.g. scripts/provision.zsh qwen3.6:27b
 #
 # Installs runtimes and tools, creates the venv, downloads spaCy models, records
 # the model's SHA-256 for the allowlist, generates the signing key, and
@@ -11,7 +12,7 @@ cd "${0:A:h}/.."
 
 MODEL="${1:-}"
 WHEELHOUSE="${2:-}"
-[[ -n "$MODEL" ]] || { print -u2 "usage: $0 <model-file-or-dir> [--wheelhouse]"; exit 64; }
+[[ -n "$MODEL" ]] || { print -u2 "usage: $0 <ollama-tag | model-file | model-dir> [--wheelhouse]"; exit 64; }
 [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]] || { print -u2 "Apple Silicon macOS required"; exit 1; }
 
 print "==> Homebrew packages"
@@ -34,8 +35,20 @@ fi
 print "==> Model identity"
 if [[ -d "$MODEL" ]]; then
   SHA=$(.venv/bin/python -c "from surgic.llm.identity import dir_sha256; print(dir_sha256('$MODEL'))")
-else
+elif [[ -f "$MODEL" ]]; then
   SHA=$(shasum -a 256 "$MODEL" | awk '{print $1}')
+else
+  # Ollama tag: pull through a temporary private server, read the digest, stop
+  # only that server (by PID).
+  PORT=18093
+  OLLAMA_HOST="127.0.0.1:$PORT" ollama serve >/dev/null 2>&1 &
+  OLLAMA_PID=$!
+  trap 'kill $OLLAMA_PID 2>/dev/null' EXIT
+  for i in {1..30}; do curl -sf "http://127.0.0.1:$PORT/api/version" >/dev/null && break; sleep 1; done
+  OLLAMA_HOST="127.0.0.1:$PORT" ollama pull "$MODEL"
+  SHA=$(.venv/bin/python -c "from surgic.llm.identity import ollama_digest; print(ollama_digest('$MODEL', 'http://127.0.0.1:$PORT'))")
+  kill $OLLAMA_PID 2>/dev/null; wait $OLLAMA_PID 2>/dev/null; trap - EXIT
+  [[ -n "$SHA" ]] || { print -u2 "could not read digest for $MODEL"; exit 1; }
 fi
 print "model_sha256 = [\"$SHA\"]   # add to [llm] in config/surgic.toml"
 

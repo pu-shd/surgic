@@ -63,6 +63,13 @@ def test_wrong_offsets_relocated():
     assert stats.relocated == 1 and len(out) == 2
 
 
+def test_whitespace_normalized_relocation():
+    text = "Supplier Halvorsen\nMaritime ships; Halvorsen  Maritime pays."
+    out, stats, _ = run([{"findings": [F(0, 1, "Halvorsen Maritime")]}], text=text)
+    assert stats.relocated == 1 and stats.rejected == 0
+    assert {text[s.start:s.end] for s in out} == {"Halvorsen  Maritime", "Halvorsen\nMaritime"}
+
+
 def test_fabricated_text_rejected():
     out, stats, _ = run([{"findings": [F(0, 5, "Nonexistent Corp")]}])
     assert stats.rejected == 1 and out == []

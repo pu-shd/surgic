@@ -7,12 +7,16 @@ driver validates against the schema and retries.
 """
 from __future__ import annotations
 
+import re
 import shutil
 
 import httpx
 
 from ..logging_safe import SafeError
 from .backend import ServerProcessBackend
+
+
+_THINK = re.compile(r"<think>.*?</think>", re.S)
 
 
 class MlxBackend(ServerProcessBackend):
@@ -41,7 +45,8 @@ class MlxBackend(ServerProcessBackend):
             content = r.json()["choices"][0]["message"]["content"]
         except (httpx.HTTPError, KeyError, IndexError, ValueError) as e:
             raise SafeError("llm_request_failed", backend=self.name) from e
-        # Tolerate code fences around the JSON object.
+        # Drop any reasoning block (thinking models), then tolerate code fences.
+        content = _THINK.sub("", content)
         a, b = content.find("{"), content.rfind("}")
         return content[a:b + 1] if a != -1 and b > a else content
 

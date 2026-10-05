@@ -36,9 +36,11 @@ def load_image_png(path: str) -> tuple[bytes, Image.Image]:
 def extract_image(path: str, doc_id: str, ocr: OcrFn) -> Document:
     png, _ = load_image_png(path)
     tb = TextBuilder()
+    prev_line = None
     for w in ocr(png):
         if tb.segments:
-            tb.sep(" ")
+            tb.sep(" " if w.line == prev_line else "\n")
+        prev_line = w.line
         tb.add(w.text, PixelBox(w.x0, w.y0, w.x1, w.y1))
     return Document(doc_id=doc_id, kind="image", text=tb.text, segments=tb.segments,
                     source_path=path, render_path=path, ocr_pages=1)

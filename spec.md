@@ -10,7 +10,7 @@ Studio, with verifiable proof that no data left the machine or persisted on it.
 | Hardware | 1× Mac Studio, Apple Silicon, 256 GB unified memory |
 | Input | Read-only SMB share: PDF (text or scanned), DOCX, XLSX, images, text |
 | Output | Second SMB share: redacted documents, signed audit manifests, network evidence |
-| Model | Local open-weight ~70B LLM (e.g. Llama 3.x 70B, Qwen 2.5 72B) via llama.cpp, Ollama or mlx-lm; ~60–80 GB of memory |
+| Model | Local open-weight LLM: **Qwen 3.6 27B** (`qwen3.6:27b`) via Ollama; llama.cpp and mlx-lm also supported. ~17 GB of weights, well within a 60–80 GB memory cap |
 
 ## Processing requirements
 

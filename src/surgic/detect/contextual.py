@@ -29,6 +29,10 @@ class PhaseBStats:
     by_category: dict[str, int] = field(default_factory=dict)
 
 
+def _ws_pattern(text: str) -> re.Pattern:
+    return re.compile(r"\s+".join(re.escape(t) for t in text.split()))
+
+
 def _occurrences(hay: str, needle: str) -> list[int]:
     out, i = [], hay.find(needle)
     while i != -1:
@@ -51,12 +55,20 @@ def contextual_spans(masked: Masked, backend: LLMBackend, chunk_chars: int,
                 continue
             if f.end <= len(chunk) and f.start < f.end and chunk[f.start:f.end] == f.text:
                 stats.exact += 1
+                found = [f.text]
             elif f.text in chunk:
                 stats.relocated += 1
+                found = [f.text]
             else:
-                stats.rejected += 1
-                continue
-            accepted.setdefault(f.text, f.category)
+                # Models normalize whitespace ("Halvorsen Maritime" for a value
+                # wrapped across lines): match any run of whitespace instead.
+                found = sorted({m.group(0) for m in _ws_pattern(f.text).finditer(chunk)})
+                if not found:
+                    stats.rejected += 1
+                    continue
+                stats.relocated += 1
+            for text in found:
+                accepted.setdefault(text, f.category)
             stats.by_category[f.category] = stats.by_category.get(f.category, 0) + 1
 
     spans: list[Span] = []

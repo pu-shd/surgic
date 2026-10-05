@@ -47,8 +47,12 @@ def extract_pdf(path: str, doc_id: str, ocr: OcrFn | None, kind: str = "pdf") ->
         scale = 72.0 / OCR_DPI
         for r in regions:
             pix = page.get_pixmap(dpi=OCR_DPI, clip=r, alpha=False)
+            prev_line = None
             for ow in ocr(pix.tobytes("png")):
-                tb.sep("\n")
+                # Space within an OCR line, newline between lines: values such as
+                # "(415) 555-0142" must stay contiguous for the pattern engines.
+                tb.sep(" " if ow.line == prev_line else "\n")
+                prev_line = ow.line
                 tb.add(
                     ow.text,
                     PdfBox(pno, r.x0 + ow.x0 * scale, r.y0 + ow.y0 * scale,

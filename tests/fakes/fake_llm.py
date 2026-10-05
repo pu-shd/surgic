@@ -60,9 +60,14 @@ class H(BaseHTTPRequestHandler):
         state["requests"].append({"path": self.path.split("?")[0], "keys": sorted(body.keys()),
                                   "cache_prompt": body.get("cache_prompt"),
                                   "keep_alive": body.get("keep_alive"),
+                                  "think": body.get("think"),
+                                  "template_kwargs": body.get("chat_template_kwargs"),
                                   "has_schema": bool(body.get("response_format") or body.get("format"))})
         save()
         content = "{not json" if mode == "badjson" else json.dumps(FINDING)
+        if kind == "mlx" and mode == "ok":
+            # Thinking model output: braces inside the reasoning must not confuse parsing.
+            content = "<think>maybe {start: 0} or {other}</think>\n" + content
         if self.path == "/v1/chat/completions":
             return self._json(200, {"choices": [{"message": {"content": content}}]})
         if self.path.startswith("/slots/0"):

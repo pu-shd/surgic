@@ -40,8 +40,10 @@ class MockBackend(LLMBackend):
         chunk = m.group(1) if m else ""
         findings = []
         for cat, term in self.terms:
-            for mm in re.finditer(re.escape(term), chunk):
-                # Off-by-two start offset on purpose; text stays exact.
+            # Like real models: match across line wraps but report the term with
+            # normal spacing, and with a deliberately wrong (off-by-two) start.
+            pattern = r"\s+".join(re.escape(t) for t in term.split())
+            for mm in re.finditer(pattern, chunk):
                 findings.append({"start": max(mm.start() - 2, 0), "end": mm.end(), "text": term,
                                  "category": cat, "rationale_code": "NAMED_ENTITY_IN_CONTEXT"})
         return json.dumps({"findings": findings})

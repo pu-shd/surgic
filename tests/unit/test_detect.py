@@ -149,3 +149,26 @@ def test_example_config_loads():
     assert cfg.network.smb_share_ip == "10.0.0.5" and cfg.llm.batch_size == 1
     assert len(cfg.source_sha256) == 64
     assert not cfg.storage.input_mount.startswith("~")
+
+
+def test_ocr_words_joined_by_line(tmp_path):
+    """Words on one OCR line are space-joined so multi-token values stay contiguous."""
+    import pymupdf
+    from PIL import Image
+    from surgic.extract import extract
+    from surgic.extract.ocr import OcrWord
+
+    img = tmp_path / "x.png"
+    Image.new("RGB", (400, 200), "white").save(img)
+    pdf = pymupdf.open()
+    page = pdf.new_page()
+    page.insert_image(page.rect, filename=str(img))
+    pdf.save(tmp_path / "x.pdf")
+
+    def fake_ocr(_png):
+        return [OcrWord("Card", 0, 0, 10, 10, 0), OcrWord("4111", 12, 0, 20, 10, 0),
+                OcrWord("1111", 22, 0, 30, 10, 0), OcrWord("next", 0, 20, 10, 30, 1)]
+
+    for path in (tmp_path / "x.pdf", img):
+        doc = extract(str(path), "d", str(tmp_path / "conv"), fake_ocr)
+        assert "Card 4111 1111\nnext" in doc.text, repr(doc.text)

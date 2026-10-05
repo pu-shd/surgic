@@ -60,11 +60,12 @@ def test_backend_lifecycle_and_findings(cls, kind, tmp_path):
     assert chat, "no inference request recorded"
     if kind == "llamacpp":
         assert chat[0]["cache_prompt"] is False and chat[0]["has_schema"]
+        assert chat[0]["template_kwargs"] == {"enable_thinking": False}
         assert read(state)["erased"] == 1
     if kind == "mlx":
         assert read(state)["starts"] == 2  # reset_context restarted the server
     if kind == "ollama":
-        assert chat[0]["has_schema"]
+        assert chat[0]["has_schema"] and chat[0]["think"] is False
         assert any(r["path"] == "/api/generate" and r["keep_alive"] == 0 for r in reqs)
 
 

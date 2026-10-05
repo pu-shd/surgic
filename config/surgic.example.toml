@@ -15,9 +15,10 @@ output_mount = "~/.surgic/mnt/out"
 record_input_paths = false           # keep false: file names can be sensitive
 
 [llm]
-backend = "llamacpp"                 # llamacpp | ollama | mlx
-model_path = "/opt/models/Llama-3.3-70B-Instruct-Q5_K_M.gguf"  # ~50 GB; ollama: model tag; mlx: model dir
+backend = "ollama"                   # ollama | llamacpp | mlx
+model_path = "qwen3.6:27b"           # ollama: model tag; llamacpp: GGUF path; mlx: model dir
 model_sha256 = []                    # REQUIRED allowlist; provision.zsh prints the value
+# Note: Ollama's qwen3.6 GGUF did not load in llama.cpp 0.5.0 (Homebrew); use Ollama for it.
 host = "127.0.0.1"
 port = 8088
 n_ctx = 16384

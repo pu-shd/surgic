@@ -43,9 +43,20 @@ def all_renderings(primary: str, sidecar: str, ocr) -> dict[str, str]:
     return r
 
 
+def _ws(t: str) -> str:
+    return " ".join(t.split())
+
+
 def assert_no_leaks(texts: dict[str, str], values):
-    leaks = {(name, v) for name, t in texts.items() for v in values if v in t}
+    # Whitespace-normalized: a value split across lines ("4111\n1111 ...") still counts.
+    leaks = {(name, v) for name, t in texts.items() for v in values if _ws(v) in _ws(t)}
     assert not leaks, f"leaked: {sorted(leaks)}"
+
+
+def ocr_recognized(doc_text: str) -> list[str]:
+    """Planted values the OCR engine read correctly (modulo whitespace)."""
+    norm = _ws(doc_text)
+    return [v for v in make.MUST_NOT_LEAK if _ws(v) in norm]
 
 
 def test_text_pdf(phase_a, ocr, tmp_path):
@@ -72,9 +83,11 @@ def test_scanned_pdf_ocr(phase_a, ocr, tmp_path):
     assert make.STRUCTURED["ssn"] in doc.text and make.STRUCTURED["email"] in doc.text
     assert res.regions > 5
     texts = all_renderings(res.primary, res.sidecar, ocr)
-    # Values the OCR engine recognized exactly must be gone from the re-OCR'd output.
-    recognized = [v for v in make.MUST_NOT_LEAK if v in doc.text]
-    assert len(recognized) >= 6
+    # Every value OCR read correctly (modulo whitespace) must be gone from every rendering.
+    recognized = ocr_recognized(doc.text)
+    assert len(recognized) >= 9, recognized
+    for v in ("phone", "card"):  # multi-token values: regression for per-word newline joins
+        assert make.STRUCTURED[v] in doc.text, f"{v} not contiguous in OCR text"
     assert_no_leaks(texts, recognized)
 
 
@@ -83,7 +96,9 @@ def test_png_image(phase_a, ocr, tmp_path):
     doc, spans, res, _ = sanitize(src, phase_a, ocr, tmp_path)
     assert res.primary.endswith(".pdf") and res.regions > 5
     texts = all_renderings(res.primary, res.sidecar, ocr)
-    assert_no_leaks(texts, [v for v in make.MUST_NOT_LEAK if v in doc.text] + [make.PERSON])
+    recognized = ocr_recognized(doc.text)
+    assert len(recognized) >= 9, recognized
+    assert_no_leaks(texts, recognized + [make.PERSON])
 
 
 def test_xlsx_all_parts(phase_a, ocr, tmp_path):

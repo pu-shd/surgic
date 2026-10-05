@@ -20,6 +20,7 @@ class OcrWord:
     y0: int
     x1: int
     y1: int
+    line: int = 0   # words on the same text line share this index
 
 
 OcrFn = Callable[[bytes], list[OcrWord]]
@@ -55,7 +56,7 @@ def recognize_vision(png: bytes) -> list[OcrWord]:
         raise RuntimeError("vision_ocr_failed")
 
     words: list[OcrWord] = []
-    for obs in req.results() or []:
+    for line_no, obs in enumerate(req.results() or []):
         cand = obs.topCandidates_(1)
         if not cand:
             continue
@@ -74,7 +75,7 @@ def recognize_vision(png: bytes) -> list[OcrWord]:
             x1 = int((bb.origin.x + bb.size.width) * width + 0.999)
             y1 = int((1 - bb.origin.y) * height + 0.999)
             y0 = int((1 - bb.origin.y - bb.size.height) * height)
-            words.append(OcrWord(token, max(x0, 0), max(y0, 0), min(x1, width), min(y1, height)))
+            words.append(OcrWord(token, max(x0, 0), max(y0, 0), min(x1, width), min(y1, height), line_no))
     return words
 
 
@@ -84,12 +85,15 @@ def recognize_tesseract(png: bytes) -> list[OcrWord]:
     img = Image.open(io.BytesIO(png))
     d = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, config="--psm 3")
     words = []
+    line_ids: dict[tuple, int] = {}
     for i, t in enumerate(d["text"]):
         t = (t or "").strip()
         if not t or float(d["conf"][i]) < 0:
             continue
         x, y, w, h = d["left"][i], d["top"][i], d["width"][i], d["height"][i]
-        words.append(OcrWord(t, x, y, x + w, y + h))
+        key = (d["block_num"][i], d["par_num"][i], d["line_num"][i])
+        line = line_ids.setdefault(key, len(line_ids))
+        words.append(OcrWord(t, x, y, x + w, y + h, line))
     return words
 
 

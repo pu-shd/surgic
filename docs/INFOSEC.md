@@ -50,10 +50,10 @@ logged blocks, and the RAM disk was wiped.
 ## Residual risks
 
 1. **Signing key is software-protected.** It's stored in the login Keychain, so someone with the user's login could export it. *Mitigation available:* a Secure Enclave key via Jamf (in progress).
-2. **LLM recall is imperfect.** Unstructured secrets depend on model quality. *Recommend* human spot-checks when a new document type is introduced.
+2. **LLM recall is imperfect.** Unstructured secrets depend on model quality. In testing, Qwen 3.6 27B caught contextual secrets in prose but missed a client name in a spreadsheet cell. *Recommend* human spot-checks when a new document type is introduced.
 3. **Prompt injection.** A document could try to steer the model. The worst case is under-redaction, never exfiltration.
 4. **OCR limits.** Text that OCR can't read (e.g. poor handwriting) can't be detected.
-5. **Memory pressure could cause swapping.** Swap is encrypted with an ephemeral key, and keeping the model within ~60–80 GB avoids memory pressure.
+5. **Memory pressure could cause swapping.** Swap is encrypted with an ephemeral key, and the model (~17 GB) leaves ample headroom.
 6. **Layer-2 traffic** (ARP, IPv6 neighbor discovery) isn't filtered by pf. *Requires* a static IP on a dedicated VLAN.
 
 ## Requested from Cloud / Infrastructure
@@ -66,5 +66,5 @@ logged blocks, and the RAM disk was wiped.
 ## Decisions requested from InfoSec
 
 1. Accept the software-protected signing key for the pilot, or require the Secure Enclave option.
-2. Approve the model and its weight hash (e.g. Llama 3.3 70B).
+2. Approve the model, Qwen 3.6 27B (`qwen3.6:27b`), and its weight digest.
 3. Set the human-review sampling rate for released documents.

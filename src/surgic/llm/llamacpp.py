@@ -26,6 +26,8 @@ class LlamaCppBackend(ServerProcessBackend):
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "temperature": self.cfg.temperature,
             "cache_prompt": False,
+            # Disable reasoning preambles for thinking-capable chat templates (Qwen 3.x).
+            "chat_template_kwargs": {"enable_thinking": False},
             "response_format": {"type": "json_schema",
                                 "json_schema": {"name": "findings", "schema": self.schema, "strict": True}},
         }

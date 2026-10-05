@@ -23,7 +23,7 @@ See `spec.md` for requirements and `docs/INFOSEC.md` for the control mapping, th
 
 ```zsh
 # 1. Online, once: install tools, venv, [spaCy](https://github.com/explosion/spaCy) models, signing key, model hash
-scripts/provision.zsh /opt/models/Llama-3.3-70B-Instruct-Q5_K_M.gguf
+scripts/provision.zsh qwen3.6:27b   # Ollama tag, or a GGUF file / MLX model directory
 $EDITOR config/surgic.toml          # smb_share_ip, shares, model_path, model_sha256
 
 # 2. Disconnect everything except the SMB VLAN, then:
