@@ -1,7 +1,6 @@
 # surgic
 
-Air-gapped, zero-retention document sanitization for a single Apple Silicon
-Mac Studio.
+Zero-retention document sanitization.
 
 Reads restricted documents from a read-only SMB share and redacts them in two phases: deterministic rules (Hyperscan/RE2 and Presidio), then contextual redaction by a local open-weight LLM (llama.cpp, Ollama or mlx-lm).
 
