@@ -7,5 +7,6 @@ set skip on lo0
 block drop in log all
 block drop out log all
 
-# Allow SMB strictly to the approved share server (stateful: replies permitted)
-pass out quick inet proto tcp from any to {{SMB_SHARE_IP}} port 445 flags S/SA keep state
+# Allow SMB strictly to the approved share server, on the SMB VLAN interface
+# only (stateful: replies permitted)
+pass out quick {{ON_IFACE}}inet proto tcp from any to {{SMB_SHARE_IP}} port 445 flags S/SA keep state

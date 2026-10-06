@@ -48,6 +48,9 @@ def install() -> None:
         _orig["connect_ex"] = socket.socket.connect_ex
         _orig["sendto"] = socket.socket.sendto
         _orig["getaddrinfo"] = socket.getaddrinfo
+        _orig["sendmsg"] = socket.socket.sendmsg
+        _orig["gethostbyname"] = socket.gethostbyname
+        _orig["gethostbyname_ex"] = socket.gethostbyname_ex
 
         def connect(self, addr):
             if self.family in (socket.AF_INET, socket.AF_INET6) and not _is_local(addr):
@@ -71,6 +74,24 @@ def install() -> None:
                 _block("dns")
             return _orig["getaddrinfo"](host, *a, **kw)
 
+        def sendmsg(self, buffers, ancdata=(), flags=0, address=None):
+            if (address is not None and self.family in (socket.AF_INET, socket.AF_INET6)
+                    and not _is_local(address)):
+                _block("sendmsg")
+            if address is None:
+                return _orig["sendmsg"](self, buffers, ancdata, flags)
+            return _orig["sendmsg"](self, buffers, ancdata, flags, address)
+
+        def resolver(name):
+            def fn(host):
+                if not _is_local((host,)):
+                    _block("dns")
+                return _orig[name](host)
+            return fn
+
+        socket.socket.sendmsg = sendmsg
+        socket.gethostbyname = resolver("gethostbyname")
+        socket.gethostbyname_ex = resolver("gethostbyname_ex")
         socket.socket.connect = connect
         socket.socket.connect_ex = connect_ex
         socket.socket.sendto = sendto
@@ -87,4 +108,7 @@ def uninstall() -> None:
         socket.socket.connect_ex = _orig["connect_ex"]
         socket.socket.sendto = _orig["sendto"]
         socket.getaddrinfo = _orig["getaddrinfo"]
+        socket.socket.sendmsg = _orig["sendmsg"]
+        socket.gethostbyname = _orig["gethostbyname"]
+        socket.gethostbyname_ex = _orig["gethostbyname_ex"]
         _installed = False

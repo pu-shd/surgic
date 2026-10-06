@@ -1,0 +1,8 @@
+# Inputs for the hash-locked install on the target Mac Studio (Apple Silicon).
+# Regenerate requirements/macos-arm64.lock with scripts/lock_deps.zsh after
+# changing pyproject.toml; review the diff before committing.
+-e .[ocr-vision,hyperscan,mlx]
+en_core_web_trf @ https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl
+en_core_web_lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
+setuptools>=69
+wheel

@@ -37,7 +37,7 @@ surgic = "surgic.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-surgic = ["data/*.yaml", "data/*.tmpl"]
+surgic = ["data/*.yaml", "data/*.tmpl", "data/*.sb"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

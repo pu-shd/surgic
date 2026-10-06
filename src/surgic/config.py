@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import os
+import re
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -13,14 +14,27 @@ from pydantic import BaseModel, Field, field_validator
 
 class NetworkConfig(BaseModel):
     smb_share_ip: str
+    # Interface the SMB VLAN is on (e.g. "en0"). The pf pass rule is bound to
+    # it, and preflight checks the route to the SMB host uses it.
+    smb_interface: str = ""
+    # SMB3 with encryption is required unless explicitly relaxed (signing is
+    # then still required).
+    smb_require_encryption: bool = True
     pf_anchor: str = "com.surgic.airgap"
-    capture_dir: str = "/Volumes/RAMDisk/audit"
+    capture_dir: str = ""          # default: <ramdisk>/audit; must be on the RAM disk
     probe_ip: str = "192.0.2.1"   # RFC 5737 TEST-NET-1: must be blocked by pf
 
     @field_validator("smb_share_ip")
     @classmethod
     def _ip(cls, v: str) -> str:
         ipaddress.IPv4Address(v)  # by-IP only: no DNS is permitted under the airgap
+        return v
+
+    @field_validator("smb_interface")
+    @classmethod
+    def _iface(cls, v: str) -> str:
+        if v and not re.fullmatch(r"[a-z]+[0-9]+", v):
+            raise ValueError("smb_interface must be a BSD interface name such as en0")
         return v
 
 
@@ -65,6 +79,12 @@ class LLMConfig(BaseModel):
     batch_size: int = Field(1, ge=1)  # model unloaded after every batch
     request_timeout_s: float = 600.0
     server_binary: str = ""        # override for llama-server / mlx_lm.server / ollama
+    ollama_models_dir: str = "~/.ollama/models"  # weights are hashed from here, not asked of the server
+
+    @field_validator("ollama_models_dir")
+    @classmethod
+    def _expand(cls, v: str) -> str:
+        return os.path.expanduser(v)
 
     @field_validator("host")
     @classmethod
@@ -94,6 +114,14 @@ class PreflightConfig(BaseModel):
     verify_model_hash: bool = True
 
 
+class IsolationConfig(BaseModel):
+    # "sandbox": document parsing runs in sandbox-exec'd worker processes with
+    # no network, no Keychain, no sudo and writes confined to the workspace.
+    # "process": separate worker processes without a sandbox (non-macOS CI).
+    # "inprocess": tests only; requires SURGIC_ALLOW_INPROCESS=1.
+    mode: Literal["sandbox", "process", "inprocess"] = "sandbox"
+
+
 class AuditConfig(BaseModel):
     keychain_service: str = "com.surgic.manifest-signing"
     keychain_account: str = "surgic"
@@ -109,11 +137,33 @@ class Config(BaseModel):
     detect: DetectConfig = DetectConfig()
     audit: AuditConfig = AuditConfig()
     preflight: PreflightConfig = PreflightConfig()
+    isolation: IsolationConfig = IsolationConfig()
     source_sha256: str = ""
+    source_path: str = ""
+
+    @property
+    def capture_dir(self) -> str:
+        return self.network.capture_dir or f"{self.storage.ramdisk_mount}/audit"
+
+    def security_flags(self) -> dict:
+        """Security-relevant settings, recorded in the signed manifest so the
+        verifier can reject runs made with weakened controls."""
+        return {
+            "isolation": self.isolation.mode,
+            "require_secret_scanners": self.audit.require_secret_scanners,
+            "verify_model_hash": self.preflight.verify_model_hash,
+            "require_wifi_off": self.preflight.require_wifi_off,
+            "require_bluetooth_off": self.preflight.require_bluetooth_off,
+            "smb_require_encryption": self.network.smb_require_encryption,
+            "smb_interface_bound": bool(self.network.smb_interface),
+            "allowed_listeners": len(self.preflight.allowed_listeners),
+            "extra_patterns_file": bool(self.detect.patterns_file),
+        }
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":
         raw = Path(path).read_bytes()
         cfg = cls.model_validate(tomllib.loads(raw.decode("utf-8")))
         cfg.source_sha256 = hashlib.sha256(raw).hexdigest()
+        cfg.source_path = str(Path(path).resolve())
         return cfg

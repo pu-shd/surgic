@@ -3,10 +3,17 @@
 The output workbook keeps only values: formulas become their (redacted) cached
 values, and comments, hyperlinks, defined names, document properties, external
 links, data validation, conditional formatting, tables, pivots, images and
-charts are removed. VBA is never retained.
+charts are removed. VBA is never retained. Nothing stays hidden: hidden and
+very-hidden sheets, rows and columns are made visible, and custom number
+formats that display literal text ("..." or \\x escapes, or [$text] currency
+tags) are reset to General.
 """
 from __future__ import annotations
 
+import html
+import os
+import re
+import zipfile
 from collections import defaultdict
 
 import openpyxl
@@ -33,6 +40,29 @@ def _redact_segment(text: str, seg_start: int, spans: list[Span]) -> str:
         pos = max(pos, b)
     out.append(text[pos:])
     return "".join(out)
+
+
+def _has_literal_text(fmt: str | None) -> bool:
+    return bool(fmt) and ('"' in fmt or "\\" in fmt or "[$" in fmt)
+
+
+_NUMFMT = re.compile(r'(<numFmt\b[^>]*\bformatCode=")([^"]*)(")')
+
+
+def _sanitize_number_formats(path: str) -> None:
+    """openpyxl keeps every number format the source defined in styles.xml,
+    used or not; rewrite any that would display literal text."""
+    tmp = path + ".tmp"
+    with zipfile.ZipFile(path) as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "xl/styles.xml":
+                text = data.decode("utf-8")
+                text = _NUMFMT.sub(lambda m: m.group(1) + ("General" if _has_literal_text(html.unescape(m.group(2)))
+                                                           else m.group(2)) + m.group(3), text)
+                data = text.encode("utf-8")
+            zout.writestr(item, data)
+    os.replace(tmp, path)
 
 
 def redact_xlsx(doc: Document, spans: list[Span], out: str) -> int:
@@ -66,6 +96,8 @@ def redact_xlsx(doc: Document, spans: list[Span], out: str) -> int:
             for cell in row:
                 cell.comment = None
                 cell.hyperlink = None
+                if _has_literal_text(cell.number_format):
+                    cell.number_format = "General"
                 if cell.value is None:
                     continue
                 if cell.data_type == "f":
@@ -93,6 +125,10 @@ def redact_xlsx(doc: Document, spans: list[Span], out: str) -> int:
             ws.defined_names.clear()
         if title in title_map:
             ws.title = f"Sheet{idx}"
+        ws.sheet_state = "visible"
+        for dim in list(ws.row_dimensions.values()) + list(ws.column_dimensions.values()):
+            dim.hidden = False
+            dim.outlineLevel = 0
 
     wb.defined_names.clear()
     wb._external_links = []
@@ -100,4 +136,5 @@ def redact_xlsx(doc: Document, spans: list[Span], out: str) -> int:
                                        description="", keywords="", category="")
     wb.custom_doc_props = CustomPropertyList()
     wb.save(out)
+    _sanitize_number_formats(out)
     return regions

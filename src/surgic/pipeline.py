@@ -1,41 +1,54 @@
-"""Pipeline orchestration: ingest -> extract -> Phase A -> Phase B -> redact ->
-post-scan -> release or quarantine -> signed manifest.
+"""Pipeline orchestration: ingest -> (analyzer worker) extract + Phase A ->
+Phase B (LLM, here) -> (analyzer worker) redact -> (scanner worker) post-scan
+-> stage -> release -> signed manifest.
 
-Fail-closed: any per-document error quarantines that document (nothing is
-written to the destination); any environment/LLM-isolation error aborts the run.
+This process never parses a document: it copies bytes, hashes, talks to the
+loopback LLM with masked text, and signs. Parsing happens in isolated workers
+(see ``worker.py``).
+
+Fail-closed:
+* any per-document error quarantines that document;
+* any environment/LLM-isolation error aborts the run;
+* outputs are staged on the RAM disk and released to the share only after
+  every document has been processed, so an aborted run releases nothing. An
+  aborted run still writes a signed manifest that says so.
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import platform
+import re
 import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
+from typing import Any
 
+from . import netguard
 from .audit.manifest import SCHEMA, sha256_file, write_signed
-from .audit.postscan import SecretScanners, postscan
 from .audit.signing import Signer
-from .detect import PhaseA, merge, propagate
-from .detect.contextual import contextual_spans
-from .detect.mask import build as build_mask
+from .detect.contextual import llm_accept
 from .detect.spans import Span
-from .extract import SUPPORTED_EXT, extract
-from .extract.base import UnsupportedDocument
-from .extract.ocr import OcrFn
+from .extract import SUPPORTED_EXT
 from .llm.backend import LLMBackend
 from .logging_safe import RunKey, SafeError, log_event
-from .redact import render
+from .paths import is_under
+from .worker import DocWorker, InProcessClient, ScanWorker, WorkerClient, WorkerFailure
 
 FATAL_CODES = {
     "llm_unload_unverified", "llm_reset_failed", "llm_port_in_use", "llm_server_exited",
     "llm_start_timeout", "secret_scanner_missing", "gitleaks_failed", "trufflehog_failed",
     "gitleaks_inconsistent", "trufflehog_inconsistent", "output_verify_failed",
+    "in_process_egress_attempted", "worker_protocol_error", "worker_bad_op", "sandbox_unavailable",
 }
 MAX_RESCANS = 2
+KINDS = {"pdf", "image", "xlsx", "text"}
+_PLACEHOLDER = re.compile(r"\[[A-Z0-9_]+_\d+\]")
+_COUNT_KEY = re.compile(r"(?:regex|presidio|llm):[A-Z0-9_]{1,48}")
+_RULE_KEY = re.compile(r"[A-Za-z0-9_.:-]{1,96}")
+_CHECK_KEY = re.compile(r"[A-Za-z0-9_.:-]{1,96}")
 
 
 @dataclass
@@ -55,16 +68,16 @@ class DocRecord:
     ocr_pages: int = 0
     rescans: int = 0
     postscan: dict = field(default_factory=dict)
-    llm_resets_before: int = 0
+    staged: list[str] = field(default_factory=list)  # RAM-disk copies awaiting release
 
     def public(self) -> dict:
-        d = {k: v for k, v in self.__dict__.items() if k != "llm_resets_before"}
+        d = {k: v for k, v in self.__dict__.items() if k != "staged"}
         if d["input_path"] is None:
             d.pop("input_path")
         return d
 
 
-def _counts(spans: list[Span]) -> dict[str, int]:
+def span_counts(spans: list[Span]) -> dict[str, int]:
     out: dict[str, int] = {}
     for s in spans:
         k = f"{s.source}:{s.category}"
@@ -72,10 +85,10 @@ def _counts(spans: list[Span]) -> dict[str, int]:
     return dict(sorted(out.items()))
 
 
-def _versions() -> dict[str, str]:
+def software_versions() -> dict[str, str]:
     out = {"python": platform.python_version(), "platform": platform.platform()}
     for pkg in ("surgic", "pymupdf", "presidio-analyzer", "spacy", "google-re2", "hyperscan",
-                "openpyxl", "pdfplumber", "cryptography"):
+                "openpyxl", "pdfplumber", "cryptography", "pillow"):
         try:
             out[pkg] = metadata.version(pkg)
         except metadata.PackageNotFoundError:
@@ -83,186 +96,330 @@ def _versions() -> dict[str, str]:
     return out
 
 
-def enumerate_inputs(root: str) -> list[Path]:
-    out = []
+def enumerate_inputs(root: str) -> list[tuple[Path, str]]:
+    """Every entry under ``root`` with a skip reason ("" = process it).
+    Nothing is dropped silently: hidden files, hidden directories (not
+    descended into, e.g. NAS snapshot trees) and symlinks are listed too."""
+    out: list[tuple[Path, str]] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+        keep = []
+        for d in sorted(dirnames):
+            p = Path(dirpath, d)
+            if p.is_symlink():
+                out.append((p, "symlink"))
+            elif d.startswith("."):
+                out.append((p, "hidden_dir"))
+            else:
+                keep.append(d)
+        dirnames[:] = keep
         for f in sorted(filenames):
             p = Path(dirpath, f)
-            if f.startswith(".") or p.is_symlink():
-                continue
-            out.append(p)
+            if p.is_symlink():
+                out.append((p, "symlink"))
+            elif f.startswith("."):
+                out.append((p, "hidden_file"))
+            elif p.suffix.lower() not in SUPPORTED_EXT:
+                out.append((p, "unsupported_extension"))
+            else:
+                out.append((p, ""))
     return out
 
 
+def _int(v: Any, lo: int = 0) -> int:
+    if not isinstance(v, int) or isinstance(v, bool) or v < lo:
+        raise WorkerFailure("safe", "worker_protocol_error")
+    return v
+
+
+def _counts(d: Any, key_re: re.Pattern) -> dict[str, int]:
+    if not isinstance(d, dict) or not all(isinstance(k, str) and key_re.fullmatch(k) for k in d):
+        raise WorkerFailure("safe", "worker_protocol_error")
+    return {k: _int(v) for k, v in sorted(d.items())}
+
+
+def _strs(v: Any) -> list[str]:
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+        raise WorkerFailure("safe", "worker_protocol_error")
+    return v
+
+
 class Pipeline:
-    def __init__(self, cfg, backend: LLMBackend, phase_a: PhaseA, ocr: OcrFn | None,
-                 scanners: SecretScanners | None, signer: Signer, model_sha256: str,
-                 environment: dict | None = None) -> None:
+    def __init__(self, cfg, backend: LLMBackend, phase_a=None, ocr=None, scanners=None,
+                 signer: Signer | None = None, model_sha256: str = "", environment: dict | None = None,
+                 analyzer: WorkerClient | None = None, scanner: WorkerClient | None = None,
+                 airgap: dict | None = None) -> None:
         self.cfg = cfg
         self.backend = backend
-        self.phase_a = phase_a
-        self.ocr = ocr
-        self.scanners = scanners
+        # In-process workers are a test convenience and need an explicit opt-in.
+        self.analyzer = analyzer or InProcessClient(DocWorker(cfg, phase_a, ocr))
+        self.scanner = scanner or InProcessClient(ScanWorker(phase_a, ocr, scanners))
+        assert signer is not None
         self.signer = signer
         self.model_sha256 = model_sha256
         self.environment = environment or {}
-        self.run_key = RunKey()
+        self.airgap = airgap or {}
+        self.info: dict = {}
         self.run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
 
     # ------------------------------------------------------------------
     def run(self, input_dir: str, output_dir: str, workspace: str) -> tuple[str, dict]:
         started = int(time.time())
-        files = enumerate_inputs(input_dir)
+        entries = enumerate_inputs(input_dir)
         records: list[DocRecord] = []
         work_root = Path(workspace, self.run_id)
         work_root.mkdir(parents=True, exist_ok=False)
-        supported = [(i, p) for i, p in enumerate(files) if p.suffix.lower() in SUPPORTED_EXT]
-        for i, p in enumerate(files):
-            if p.suffix.lower() not in SUPPORTED_EXT:
-                rec = self._new_record(i, p, input_dir)
-                rec.status, rec.reason = "skipped", "unsupported_extension"
-                records.append(rec)
-
-        bs = self.cfg.llm.batch_size
+        release_dir = Path(output_dir, self.run_id)
+        if release_dir.exists():
+            raise SafeError("run_dir_exists")
+        aborted = ""
         try:
+            self.analyzer.start(str(work_root))
+            self.scanner.start(str(work_root))
+            self.info = self._info(self.analyzer.call("info"))
+            supported = []
+            for i, (p, skip) in enumerate(entries):
+                if skip:
+                    rec = self._new_record(i, p, input_dir, hash_it=skip not in ("symlink", "hidden_dir"))
+                    rec.status, rec.reason = "skipped", skip
+                    records.append(rec)
+                else:
+                    supported.append((i, p))
+            bs = self.cfg.llm.batch_size
             for b in range(0, len(supported), bs):
                 batch = supported[b:b + bs]
                 self.backend.start()
                 for i, p in batch:
                     rec = self._new_record(i, p, input_dir)
                     records.append(rec)
-                    self._process(rec, p, output_dir, work_root)
+                    if rec.status == "pending":
+                        self._process(rec, p, work_root)
                     self.backend.reset_context()
                 self.backend.unload()
                 if self.backend.is_loaded():
                     raise SafeError("llm_unload_unverified", backend=self.backend.name)
+            if netguard.attempts:
+                raise SafeError("in_process_egress_attempted", count=len(netguard.attempts))
+            self._release(records, release_dir)
+        except SafeError as e:
+            aborted = e.code
+            raise
+        except BaseException as e:
+            aborted = "error:" + type(e).__name__
+            raise
         finally:
-            if self.backend.is_loaded():
-                self.backend.unload()
-            shutil.rmtree(work_root, ignore_errors=True)
-            self.run_key.wipe()
+            try:
+                if self.backend.is_loaded():
+                    self.backend.unload()
+            finally:
+                for w in (self.analyzer, self.scanner):
+                    w.stop()
+                shutil.rmtree(work_root, ignore_errors=True)
+                if aborted:
+                    self._write_aborted(records, started, output_dir, aborted)
 
         records.sort(key=lambda r: r.doc_id)
         manifest = self._manifest(records, started)
-        mdir = Path(output_dir, "manifests")
-        mdir.mkdir(parents=True, exist_ok=True)
-        mpath, _ = write_signed(manifest, mdir / f"{self.run_id}.manifest.json", self.signer)
-        (mdir / "pubkey.pem").write_bytes(self.signer.public_pem())
+        mpath = self._write_manifest(manifest, output_dir)
         log_event("run_complete", run_id=self.run_id, documents=len(records),
                   clean=manifest["summary"]["clean"], quarantined=manifest["summary"]["quarantined"])
         return mpath, manifest
 
-    def _new_record(self, i: int, p: Path, input_dir: str) -> DocRecord:
-        sha = sha256_file(p)
-        rec = DocRecord(doc_id=f"{i:05d}-{sha[:12]}", input_sha256=sha, input_bytes=p.stat().st_size)
+    def _info(self, info: dict) -> dict:
+        sw = info.get("software", {})
+        if not (isinstance(info.get("patterns_sha256"), str) and isinstance(info.get("hyperscan_active"), bool)
+                and isinstance(info.get("presidio_model"), str) and isinstance(sw, dict)
+                and all(isinstance(k, str) and isinstance(v, str) for k, v in sw.items())):
+            raise WorkerFailure("safe", "worker_protocol_error")
+        return info
+
+    def _new_record(self, i: int, p: Path, input_dir: str, hash_it: bool = True) -> DocRecord:
+        rec = DocRecord(doc_id=f"{i:05d}-unread")
+        try:
+            if hash_it:
+                sha = sha256_file(p)
+                rec = DocRecord(doc_id=f"{i:05d}-{sha[:12]}", input_sha256=sha, input_bytes=p.stat().st_size)
+            else:
+                rec = DocRecord(doc_id=f"{i:05d}-unhashed")
+        except OSError:
+            rec.status, rec.reason = "quarantined", "input_unreadable"
         if self.cfg.storage.record_input_paths:
             rec.input_path = str(p.relative_to(input_dir))
         return rec
 
     # ------------------------------------------------------------------
-    def _process(self, rec: DocRecord, src: Path, output_dir: str, work_root: Path) -> None:
+    def _process(self, rec: DocRecord, src: Path, work_root: Path) -> None:
         wd = work_root / rec.doc_id
         (wd / "in").mkdir(parents=True)
         known: set[str] = set()
+        doc_key = RunKey()  # per document: identical values in two documents are not linkable
         try:
             local = wd / "in" / ("input" + src.suffix.lower())
             shutil.copyfile(src, local)
             if sha256_file(local) != rec.input_sha256:
                 raise SafeError("input_changed_during_copy")
-            doc = extract(str(local), rec.doc_id, str(wd / "conv"), self.ocr)
-            rec.kind, rec.ocr_pages = doc.kind, doc.ocr_pages
+            a = self.analyzer.call("analyze", doc_id=rec.doc_id, path=str(local), work_dir=str(wd))
+            if a.get("kind") not in KINDS or not isinstance(a.get("masked_text"), str):
+                raise WorkerFailure("safe", "worker_protocol_error")
+            rec.kind, rec.ocr_pages = a["kind"], _int(a.get("ocr_pages"))
+            rec.phase_a = _counts(a.get("phase_a"), _COUNT_KEY)
 
-            a_spans = self.phase_a.find(doc.text)
-            a_spans = propagate(doc.text, a_spans)
-            masked = build_mask(doc.text, a_spans)
-            b_spans, stats, _ = contextual_spans(masked, self.backend, self.cfg.llm.chunk_chars,
-                                                 self.cfg.llm.chunk_overlap)
+            accepted, stats = llm_accept(a["masked_text"], self.backend, self.cfg.llm.chunk_chars,
+                                         self.cfg.llm.chunk_overlap)
             rec.phase_b = {k: v for k, v in stats.__dict__.items()}
-            spans = merge(propagate(doc.text, a_spans + b_spans))
-            rec.phase_a = _counts(a_spans)
+            # Accepted strings without placeholders are original text: the
+            # post-scan checks them independently of what the analyzer reports.
+            own_known = {t for t in accepted if not _PLACEHOLDER.search(t)}
 
             out_dir = wd / "out"
+            extra: list[str] = []
+            prev_extra = 0
+            passed = False
             for attempt in range(MAX_RESCANS + 1):
-                known = {doc.text[s.start:s.end] for s in spans}
-                result = render(doc, spans, str(out_dir), rec.doc_id)
-                rec.regions = result.regions
-                if spans and result.regions == 0:
-                    raise SafeError("no_regions_redacted")
-                report = postscan(result.primary, result.sidecar, known, self.phase_a, self.ocr,
-                                  self.scanners, str(wd))
-                if report.passed:
+                r = self.analyzer.call("render", doc_id=rec.doc_id, accepted=accepted, extra_values=extra,
+                                       out_dir=str(out_dir))
+                files = self._outputs(r, rec.doc_id, out_dir)
+                rec.regions = _int(r.get("regions"))
+                extra_spans = _int(r.get("extra_spans"))
+                if attempt and extra_spans <= prev_extra:
+                    break  # feedback values are not in the source: cannot fix, quarantine
+                prev_extra = extra_spans
+                known = set(_strs(r.get("known_values"))) | own_known
+                rep = self.scanner.call("scan", primary=r["primary"], sidecar=r["sidecar"],
+                                        known_values=sorted(known), scratch_dir=str(wd))
+                pub = rep.get("public", {})
+                if not (isinstance(rep.get("passed"), bool) and isinstance(pub, dict)
+                        and pub.get("passed") is rep["passed"]):
+                    raise WorkerFailure("safe", "worker_protocol_error")
+                rec.postscan = {"passed": rep["passed"], "checks": _counts(pub.get("checks"), _CHECK_KEY),
+                                "rules": _counts(pub.get("rules"), _RULE_KEY)}
+                passed = rep["passed"]
+                if passed:
                     break
-                # Feed newly detected values back if they exist in the source text.
-                extra = []
-                for v in report.new_values:
-                    if v.strip():
-                        i = doc.text.find(v)
-                        while i != -1:
-                            extra.append(Span(i, i + len(v), "POSTSCAN_FEEDBACK", "regex"))
-                            i = doc.text.find(v, i + 1)
-                if not extra or attempt == MAX_RESCANS:
+                new = [v for v in _strs(rep.get("new_values")) if v.strip() and v not in extra]
+                if not new or attempt == MAX_RESCANS:
                     break
                 rec.rescans += 1
-                spans = merge(spans + extra)
-                shutil.rmtree(out_dir, ignore_errors=True)
-            rec.postscan = report.public()
-            rec.token_hmacs = sorted({self.run_key.token(v) for v in known})
-            if not report.passed:
+                extra += new
+            rec.token_hmacs = sorted({doc_key.token(v) for v in known})
+            if not passed:
                 rec.status, rec.reason = "quarantined", "postscan_failed"
                 return
 
-            dest = Path(output_dir, rec.doc_id)
+            stage = work_root / "_release" / rec.doc_id
+            stage.mkdir(parents=True)
+            for f in files:
+                target = stage / f.name
+                shutil.copyfile(f, target)
+                if sha256_file(f) != sha256_file(target):
+                    raise SafeError("output_verify_failed")
+                rec.staged.append(str(target))
+            rec.status = "clean"
+        except WorkerFailure as e:
+            if e.kind == "safe" and e.code in FATAL_CODES:
+                raise SafeError(e.code) from None
+            if e.kind in ("crashed", "timeout"):
+                self.analyzer.restart()
+                self.scanner.restart()
+            rec.status, rec.reason = "quarantined", e.code
+        except SafeError as e:
+            if e.code in FATAL_CODES:
+                raise
+            rec.status, rec.reason = "quarantined", e.code
+        except Exception as e:  # noqa: BLE001
+            rec.status, rec.reason = "quarantined", "error:" + type(e).__name__
+        finally:
+            known.clear()
+            doc_key.wipe()
+            try:
+                self.analyzer.call("forget", doc_id=rec.doc_id)
+            except WorkerFailure:
+                pass
+            shutil.rmtree(wd, ignore_errors=True)
+            if rec.status != "clean":
+                rec.staged.clear()
+            log_event("document", doc_id=rec.doc_id, status=rec.status, reason=rec.reason or None,
+                      regions=rec.regions)
+
+    @staticmethod
+    def _outputs(r: dict, doc_id: str, out_dir: Path) -> list[Path]:
+        """Worker-reported output paths: must be our own names, regular files,
+        inside this document's output directory."""
+        names = re.compile(re.escape(doc_id) + r"\.redacted\.(?:pdf|xlsx|txt)")
+        files = [Path(f) for f in _strs(r.get("files"))]
+        prim, side = r.get("primary"), r.get("sidecar")
+        if not files or str(prim) not in map(str, files) or str(side) not in map(str, files):
+            raise WorkerFailure("safe", "worker_protocol_error")
+        for f in files:
+            if (not names.fullmatch(f.name) or f.parent != out_dir or f.is_symlink()
+                    or not f.is_file() or not is_under(str(f), str(out_dir))):
+                raise WorkerFailure("safe", "worker_protocol_error")
+        return files
+
+    def _release(self, records: list[DocRecord], release_dir: Path) -> None:
+        """Copy staged outputs to the share and verify every byte arrived."""
+        for rec in records:
+            if rec.status != "clean":
+                continue
+            dest = release_dir / rec.doc_id
             dest.mkdir(parents=True, exist_ok=False)
-            for f in result.files:
+            for f in rec.staged:
                 target = dest / Path(f).name
                 shutil.copyfile(f, target)
                 h_local, h_remote = sha256_file(f), sha256_file(target)
                 if h_local != h_remote:
                     raise SafeError("output_verify_failed")
-                rec.outputs.append({"name": Path(f).name, "sha256": h_remote,
-                                    "bytes": target.stat().st_size})
-            rec.status = "clean"
-        except SafeError as e:
-            if e.code in FATAL_CODES:
-                raise
-            rec.status, rec.reason = "quarantined", e.code
-        except UnsupportedDocument as e:
-            rec.status, rec.reason = "quarantined", str(e.args[0]) if e.args else "unsupported"
-        except Exception as e:  # noqa: BLE001
-            rec.status, rec.reason = "quarantined", "error:" + type(e).__name__
-        finally:
-            known.clear()
-            shutil.rmtree(wd, ignore_errors=True)
-            if rec.status == "quarantined":
-                shutil.rmtree(Path(output_dir, rec.doc_id), ignore_errors=True)
-            log_event("document", doc_id=rec.doc_id, status=rec.status, reason=rec.reason or None,
-                      regions=rec.regions)
+                rec.outputs.append({"name": target.name, "sha256": h_remote, "bytes": target.stat().st_size})
+            rec.staged.clear()
 
     # ------------------------------------------------------------------
+    def _write_manifest(self, manifest: dict, output_dir: str) -> str:
+        mdir = Path(output_dir, "manifests")
+        mdir.mkdir(parents=True, exist_ok=True)
+        mpath, _ = write_signed(manifest, mdir / f"{self.run_id}.manifest.json", self.signer)
+        (mdir / "pubkey.pem").write_bytes(self.signer.public_pem())
+        return mpath
+
+    def _write_aborted(self, records: list[DocRecord], started: int, output_dir: str, code: str) -> None:
+        for r in records:
+            if r.status in ("clean", "pending"):
+                r.status, r.reason = "withheld", "run_aborted"
+        records.sort(key=lambda r: r.doc_id)
+        manifest = self._manifest(records, started)
+        manifest["aborted"] = code if re.fullmatch(r"(?:error:)?[A-Za-z0-9_]{1,64}", code) else "aborted"
+        try:
+            self._write_manifest(manifest, output_dir)
+        except Exception:  # noqa: BLE001 - never mask the original failure
+            log_event("aborted_manifest_unwritten", status="error")
+
     def _manifest(self, records: list[DocRecord], started: int) -> dict:
-        patterns_sha = hashlib.sha256(
-            "\n".join(f"{p.name}\t{p.regex}" for p in self.phase_a.regex.patterns).encode()
-        ).hexdigest()
-        summary = {s: sum(1 for r in records if r.status == s) for s in ("clean", "quarantined", "skipped")}
+        summary = {s: sum(1 for r in records if r.status == s)
+                   for s in ("clean", "quarantined", "skipped", "withheld")}
         summary["total"] = len(records)
+        security = self.cfg.security_flags()
+        security["isolation"] = (self.analyzer.isolation if self.analyzer.isolation == self.scanner.isolation
+                                 else "mixed")
+        security["model_allowlisted"] = bool(self.model_sha256) and self.model_sha256 in set(self.cfg.llm.model_sha256)
+        security["in_process_egress_attempts"] = len(netguard.attempts)
         return {
             "schema": SCHEMA,
             "run_id": self.run_id,
             "started_at": started,
             "finished_at": int(time.time()),
-            "host": {"node": platform.node(), "machine": platform.machine(), "os": platform.mac_ver()[0] or platform.system()},
-            "software": _versions(),
+            "aborted": "",
+            "airgap": self.airgap,
+            "host": {"node": platform.node(), "machine": platform.machine(),
+                     "os": platform.mac_ver()[0] or platform.system()},
+            "software": self.info.get("software", {}),
             "config_sha256": self.cfg.source_sha256,
-            "patterns_sha256": patterns_sha,
-            "hyperscan_active": self.phase_a.regex.hyperscan_active,
-            "presidio_model": getattr(self.phase_a.presidio, "model_name", "none"),
+            "security": security,
+            "patterns_sha256": self.info.get("patterns_sha256", ""),
+            "hyperscan_active": self.info.get("hyperscan_active", False),
+            "presidio_model": self.info.get("presidio_model", ""),
             "llm": {**self.backend.identity(), "model_sha256": self.model_sha256,
                     "batch_size": self.cfg.llm.batch_size, "unloads": self.backend.unload_count,
                     "context_resets": self.backend.reset_count},
             "environment": self.environment,
-            "token_hmac": "HMAC-SHA256 with an ephemeral per-run key (destroyed at run end)",
+            "token_hmac": "HMAC-SHA256 with an ephemeral per-document key (destroyed after the document)",
             "documents": [r.public() for r in records],
             "summary": summary,
         }
-

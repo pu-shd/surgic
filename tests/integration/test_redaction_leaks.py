@@ -112,8 +112,11 @@ def test_xlsx_all_parts(phase_a, ocr, tmp_path):
     assert_no_leaks(texts, values)
     wb = openpyxl.load_workbook(res.primary)
     assert wb.properties.creator in ("", None) and not wb.properties.title
-    assert len(wb.worksheets) == 2  # hidden sheet kept but redacted and renamed
+    assert len(wb.worksheets) == 2  # formerly hidden sheet: redacted, renamed, and visible
     assert wb.worksheets[1].title == "Sheet2"
+    assert all(w.sheet_state == "visible" for w in wb.worksheets)
+    assert not wb.worksheets[0].row_dimensions[7].hidden
+    assert wb.worksheets[0]["B8"].number_format == "General" and wb.worksheets[0]["B8"].value == 1250
     for ws in wb.worksheets:
         for row in ws.iter_rows():
             for c in row:
@@ -162,7 +165,7 @@ def test_postscan_passes_clean_output(phase_a, ocr, tmp_path, real_or_fake_scann
     known = {doc.text[s.start:s.end] for s in spans}
     rep = postscan(res.primary, res.sidecar, known, phase_a, ocr, real_or_fake_scanners, str(tmp_path))
     assert rep.passed, rep.public()
-    assert rep.checks["renderings"] == 4
+    assert rep.checks["renderings"] == 5  # sidecar, primary, second_parser, raw, raw_structured
     assert rep.checks.get("gitleaks_ran") == 1 and rep.checks.get("trufflehog_ran") == 1
 
 
@@ -189,3 +192,63 @@ def test_raw_pdf_text_includes_metadata(tmp_path):
     src = make.make_text_pdf(tmp_path / "memo.pdf")
     raw = pdf_raw_text(str(src))
     assert make.PERSON in raw  # sanity: the raw extractor really sees metadata
+
+
+def test_pdf_hidden_content_is_found_and_redacted(phase_a, ocr, tmp_path):
+    src = make.make_hiding_pdf(tmp_path / "hiding.pdf")
+    plain = "".join(p.get_text() for p in pymupdf.open(src))
+    assert not any(v in plain for v in make.HIDDEN.values()), "fixture must hide its values"
+    doc, spans, res, _ = sanitize(src, phase_a, ocr, tmp_path)
+    for k, v in make.HIDDEN.items():
+        assert v in doc.text, f"{k} not extracted"
+    texts = all_renderings(res.primary, res.sidecar, ocr)
+    assert_no_leaks(texts, list(make.HIDDEN.values()) + [make.PERSON])
+    out = pymupdf.open(res.primary)
+    cat = out.pdf_catalog()
+    for key in ("StructTreeRoot", "OCProperties", "Names", "AcroForm"):
+        assert out.xref_get_key(cat, key)[0] == "null", key
+    assert out[0].cropbox == out[0].mediabox
+    # Nothing can be revealed by changing the view: the output has no layers
+    # and no text outside the page.
+    words = out[0].get_text("words", clip=pymupdf.INFINITE_RECT(),
+                            flags=pymupdf.TEXTFLAGS_WORDS & ~pymupdf.TEXT_MEDIABOX_CLIP)
+    assert all(pymupdf.Rect(w[:4]).intersects(out[0].rect) for w in words)
+
+
+def test_misencoded_text_is_recovered_by_ocr(tmp_path):
+    """A font whose Unicode mapping lies: the text layer says one thing, the
+    page shows another. The OCR word the text layer does not account for is
+    added as its own located segment."""
+    from surgic.extract.ocr import OcrWord
+    from surgic.extract.pdf import extract_pdf
+    pdf = pymupdf.open()
+    page = pdf.new_page(width=612, height=792)
+    page.insert_text((72, 100), "Xq#zZ!kk@pp", fontsize=12)       # "garbled" text layer
+    page.insert_text((72, 200), "Quarterly", fontsize=12)
+    pdf.save(tmp_path / "g.pdf")
+    scale = 300 / 72
+
+    def fake_ocr(png):
+        return [OcrWord("219-09-9999", int(72 * scale), int(90 * scale), int(160 * scale), int(102 * scale), 0),
+                OcrWord("Quarterly", int(72 * scale), int(190 * scale), int(130 * scale), int(202 * scale), 1)]
+
+    doc = extract_pdf(str(tmp_path / "g.pdf"), "g", fake_ocr)
+    assert "219-09-9999" in doc.text            # what the page shows
+    assert doc.text.count("Quarterly") == 1     # matching OCR is not duplicated
+    seg = next(s for s in doc.segments if doc.text[s.start:s.end] == "219-09-9999")
+    assert seg.loc.ocr and abs(seg.loc.x0 - 72) < 1
+
+
+def test_postscan_regex_scans_raw_parts(regex_only, tmp_path):
+    """A structured value that only exists in a PDF object (not page text) fails the scan."""
+    pdf = pymupdf.open()
+    pdf.new_page().insert_text((72, 72), "nothing here")
+    xref = pdf.get_new_xref()
+    pdf.update_object(xref, f"<</Private ({make.STRUCTURED['ssn']})>>")
+    pdf.xref_set_key(pdf.pdf_catalog(), "PieceInfo", f"{xref} 0 R")
+    pdf.save(tmp_path / "o.pdf")
+    side = tmp_path / "o.txt"
+    side.write_text("nothing here")
+    rep = postscan(str(tmp_path / "o.pdf"), str(side), set(), regex_only, None, None, str(tmp_path))
+    assert not rep.passed and rep.checks.get("regex_raw", 0) >= 1
+    assert rep.rules.get("regex_raw:US_SSN", 0) >= 1

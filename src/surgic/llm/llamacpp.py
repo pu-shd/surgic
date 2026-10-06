@@ -1,7 +1,9 @@
 """llama.cpp `llama-server` adapter (Metal), grammar-constrained JSON output."""
 from __future__ import annotations
 
+import os
 import shutil
+import tempfile
 
 import httpx
 
@@ -19,7 +21,17 @@ class LlamaCppBackend(ServerProcessBackend):
             "--host", self.cfg.host, "--port", str(self.cfg.port),
             "-c", str(self.cfg.n_ctx), "-ngl", "999", "-np", "1",
             "--offline", "--no-webui", "--cache-reuse", "0", "--log-disable",
+            # Slot actions (incl. the per-document KV erase) are only served
+            # when a slot save path is set. TMPDIR is the RAM disk under the
+            # airgap; nothing is ever saved there (no save requests are made).
+            "--slot-save-path", self.slot_dir(),
         ]
+
+    @staticmethod
+    def slot_dir() -> str:
+        d = os.path.join(tempfile.gettempdir(), "surgic-llama-slots")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        return d
 
     def complete_json(self, system: str, user: str) -> str:
         body = {

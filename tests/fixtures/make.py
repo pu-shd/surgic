@@ -104,6 +104,39 @@ def make_scanned_pdf(path: Path) -> Path:
     return path
 
 
+# Values hidden from a plain text extraction of the source PDF.
+HIDDEN = {
+    "crop": "321-54-9876",       # inside the media box, outside the crop box
+    "offpage": "456-78-9123",    # outside the media box entirely
+    "layer": "234-56-7891",      # in an optional-content layer that is off
+    "small_image": "345-67-8912",  # text inside an image under 1% of the page
+}
+
+
+def make_hiding_pdf(path: Path) -> Path:
+    pdf = pymupdf.open()
+    page = pdf.new_page(width=612, height=792)
+    page.insert_text((72, 72), "Quarterly memo, nothing visible to see here.", fontsize=11)
+    page.insert_text((72, 700), f"Cropped SSN {HIDDEN['crop']}", fontsize=11)
+    page.insert_text((640, 120), f"Offpage SSN {HIDDEN['offpage']}", fontsize=11)
+    ocg = pdf.add_ocg("draft", on=False)
+    page.insert_text((72, 300), f"Layer SSN {HIDDEN['layer']}", fontsize=11, oc=ocg)
+    font = ImageFont.load_default(size=60)
+    img = Image.new("RGB", (640, 110), "white")
+    ImageDraw.Draw(img).text((10, 20), HIDDEN["small_image"], fill="black", font=font)
+    png = path.with_suffix(".tmp.png")
+    img.save(png)
+    page.insert_image(pymupdf.Rect(300, 400, 300 + 96, 400 + 16.5), filename=str(png))  # 0.33% of page
+    png.unlink()
+    # Accessibility tree with alt text naming a person.
+    xref = pdf.get_new_xref()
+    pdf.update_object(xref, f"<</Type/StructTreeRoot /K <</S/Figure /Alt ({PERSON})>> >>")
+    pdf.xref_set_key(pdf.pdf_catalog(), "StructTreeRoot", f"{xref} 0 R")
+    page.set_cropbox(pymupdf.Rect(0, 0, 612, 600))
+    pdf.save(path)
+    return path
+
+
 def make_xlsx(path: Path) -> Path:
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -117,6 +150,10 @@ def make_xlsx(path: Path) -> Path:
     hidden = wb.create_sheet(STRUCTURED["codename"])
     hidden["A1"] = f"Employee {STRUCTURED['emp']} control {STRUCTURED['dcn']}"
     hidden.sheet_state = "hidden"
+    ws["A7"] = "Supplier list"
+    ws.row_dimensions[7].hidden = True
+    ws["B8"] = 1250
+    ws["B8"].number_format = f'"{CONTEXTUAL["client"]} "#,##0'  # literal text in a number format
     wb.properties.creator = PERSON
     wb.properties.title = STRUCTURED["codename"]
     wb.save(path)

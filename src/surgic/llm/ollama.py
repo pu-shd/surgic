@@ -1,5 +1,7 @@
 """Ollama adapter. Spawns a private `ollama serve` bound to loopback.
 
+The weights' identity is computed from the files on disk before the server
+starts (llm/identity.py), never asked of the server.
 Unload is requested with keep_alive=0 and verified via /api/ps. Ollama keeps
 the KV cache of a loaded runner, so reset_context performs a verified unload.
 """
@@ -22,8 +24,9 @@ class OllamaBackend(ServerProcessBackend):
         return [binary, "serve"]
 
     def extra_env(self) -> dict[str, str]:
+        # OLLAMA_MODELS pins the server to the directory whose blobs were hashed.
         return {"OLLAMA_HOST": f"{self.cfg.host}:{self.cfg.port}", "OLLAMA_KEEP_ALIVE": "0",
-                "OLLAMA_NUM_PARALLEL": "1", "OLLAMA_NOPRUNE": "1"}
+                "OLLAMA_NUM_PARALLEL": "1", "OLLAMA_NOPRUNE": "1", "OLLAMA_MODELS": self.cfg.ollama_models_dir}
 
     def health_path(self) -> str:
         return "/api/version"

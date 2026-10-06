@@ -5,6 +5,11 @@ Checks (any hit fails the document):
                      text) appears in any re-extraction or raw decoded part;
   2. phase_a       - deterministic detectors find nothing new in re-extracted
                      text (placeholders excluded);
+  2b. regex_raw    - the structured-pattern engine finds nothing in the text
+                     a file carries outside its pages: PDF string objects and
+                     XMP, XLSX XML text and number formats. (Not raw streams:
+                     coordinate and font-width arrays look like phone and card
+                     numbers.) NER is not run there: it needs prose;
   3. gitleaks / trufflehog - offline secret scanners over text renderings.
 Re-extraction uses the primary parser (with OCR) and an independent second
 parser (pdfplumber), plus every decoded PDF stream / XLSX XML part.
@@ -66,6 +71,76 @@ def pdf_raw_text(path: str) -> str:
     return "\n".join(out)
 
 
+def _pdf_literal_strings(obj: str) -> list[str]:
+    """Literal (...) and hex <...> strings in a PDF object definition."""
+    out, i, n = [], 0, len(obj)
+    while i < n:
+        c = obj[i]
+        if c == "(":
+            depth, buf, i = 1, [], i + 1
+            while i < n and depth:
+                ch = obj[i]
+                if ch == "\\" and i + 1 < n:
+                    buf.append(obj[i + 1])
+                    i += 2
+                    continue
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if not depth:
+                        break
+                buf.append(ch)
+                i += 1
+            out.append("".join(buf))
+        elif c == "<" and i + 1 < n and obj[i + 1] != "<":
+            j = obj.find(">", i)
+            if j == -1:
+                break
+            hexs = re.sub(r"\s", "", obj[i + 1:j])
+            try:
+                raw = bytes.fromhex(hexs + ("0" if len(hexs) % 2 else ""))
+                txt = raw[2:].decode("utf-16-be") if raw.startswith(b"\xfe\xff") else raw.decode("latin-1")
+                if txt and sum(ch.isprintable() for ch in txt) >= 0.9 * len(txt):
+                    out.append(txt)
+            except (ValueError, UnicodeDecodeError):
+                pass
+            i = j
+        elif c == "<":
+            i += 1  # dictionary opener "<<"
+        i += 1
+    return out
+
+
+def pdf_strings(path: str) -> str:
+    """Text a PDF carries outside page content: every string object plus
+    document metadata and XMP."""
+    out = []
+    pdf = pymupdf.open(path)
+    for xref in range(1, pdf.xref_length()):
+        try:
+            out += _pdf_literal_strings(pdf.xref_object(xref, compressed=False))
+        except Exception:  # noqa: BLE001
+            continue
+    out.append(" ".join(str(v) for v in (pdf.metadata or {}).values() if v))
+    out.append(pdf.get_xml_metadata() or "")
+    pdf.close()
+    return "\n".join(out)
+
+
+def xlsx_strings(path: str) -> str:
+    """Text nodes of every XML part, plus number-format codes."""
+    out = []
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            if not name.endswith((".xml", ".rels", ".vml")):
+                continue
+            text = z.read(name).decode("utf-8", errors="replace")
+            out += re.findall(r">([^<>]+)<", text)
+            out += re.findall(r'formatCode="([^"]*)"', text)
+    return "\n".join(out)
+
+
 def zip_raw_text(path: str) -> str:
     out = []
     with zipfile.ZipFile(path) as z:
@@ -82,9 +157,11 @@ def renderings(primary: str, sidecar: str, ocr: OcrFn | None) -> dict[str, str]:
         r["primary"] = extract_pdf(primary, "postscan", ocr).text
         r["second_parser"] = extract_pdf_plumber_text(primary)
         r["raw"] = pdf_raw_text(primary)
+        r["raw_structured"] = pdf_strings(primary)
     elif ext == ".xlsx":
         r["primary"] = extract_xlsx(primary, "postscan").text
         r["raw"] = zip_raw_text(primary)
+        r["raw_structured"] = xlsx_strings(primary)
     return r
 
 
@@ -164,10 +241,22 @@ def postscan(primary: str, sidecar: str, known_values: set[str], phase_a, ocr: O
             for s in spans:
                 report.new_values.add(clean[s.start:s.end])
 
+    raw = texts.get("raw_structured")
+    if raw is not None:
+        clean = _strip_marks(raw)
+        spans = phase_a.regex.find(clean)
+        if spans:
+            report.fail("regex_raw", len(spans))
+            for s in spans:
+                report.rules[f"regex_raw:{s.category}"] = report.rules.get(f"regex_raw:{s.category}", 0) + 1
+                report.new_values.add(clean[s.start:s.end])
+
     if scanners is not None:
         d = tempfile.mkdtemp(prefix="scan_", dir=scratch_dir)
         try:
             for name, text in texts.items():
+                if name == "raw_structured":
+                    continue  # subset of "raw"
                 Path(d, f"{name}.txt").write_text(text, encoding="utf-8")
             scanners.scan_dir(d, report)
         finally:

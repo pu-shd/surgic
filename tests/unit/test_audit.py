@@ -61,42 +61,106 @@ def test_canonical_sorted_compact_no_floats():
 
 
 def test_sign_verify_and_tamper(tmp_path, key_store):
+    from fakes import evidence
     signer = Signer(key_store)
-    out = tmp_path / "out"
-    (out / "00000-abc").mkdir(parents=True)
-    f = out / "00000-abc" / "x.redacted.pdf"
-    f.write_bytes(b"clean")
-    m = {"schema": SCHEMA, "documents": [{"doc_id": "00000-abc", "status": "clean",
-         "outputs": [{"name": "x.redacted.pdf", "sha256": sha256_file(f)}], "postscan": {"passed": True}}]}
-    mp, _ = write_signed(m, tmp_path / "m.json", signer)
+    mp, cp, share = evidence.build(tmp_path, signer)
     pem = signer.public_pem()
-    assert verify_file(mp, pem, str(out)) == []
+    assert verify_file(mp, pem, str(share), cp) == []
+    assert verify_file(cp, pem) == []
 
     # 1-byte manifest tamper -> signature invalid
-    data = bytearray((tmp_path / "m.json").read_bytes())
+    data = bytearray(open(mp, "rb").read())
     data[10] ^= 0x01
-    (tmp_path / "m.json").write_bytes(bytes(data))
-    assert verify_file(mp, pem) == ["signature_invalid"]
+    open(mp, "wb").write(bytes(data))
+    assert verify_file(mp, pem, str(share), cp) == ["signature_invalid"]
 
 
 def test_verify_detects_output_tamper_and_wrong_key(tmp_path, key_store):
+    from fakes import evidence
     signer = Signer(key_store)
-    out = tmp_path / "out" / "d1"
-    out.mkdir(parents=True)
-    (out / "a.txt").write_bytes(b"one")
-    m = {"schema": SCHEMA, "documents": [
-        {"doc_id": "d1", "status": "clean", "outputs": [{"name": "a.txt", "sha256": sha256_file(out / "a.txt")}],
-         "postscan": {"passed": True}},
-        {"doc_id": "d2", "status": "quarantined", "outputs": [], "postscan": {"passed": False}}]}
-    mp, _ = write_signed(m, tmp_path / "m.json", signer)
-    (out / "a.txt").write_bytes(b"two")
-    (tmp_path / "out" / "d2").mkdir()
-    fails = verify_file(mp, signer.public_pem(), str(tmp_path / "out"))
-    assert "output_hash_mismatch:d1" in fails and "quarantined_output_present:d2" in fails
+    mp, cp, share = evidence.build(tmp_path, signer)
+    run = share / evidence.RUN
+    (run / "00001-abc" / "00001-abc.redacted.pdf").write_bytes(b"two")
+    (run / "00002-def").mkdir()
+    fails = verify_file(mp, signer.public_pem(), str(share), cp)
+    assert "output_hash_mismatch:00001-abc" in fails and "quarantined_output_present:00002-def" in fails
 
     other = FileStore(str(tmp_path / "other"))
     Signer.generate(other)
     assert verify_file(mp, Signer(other).public_pem()) == ["signature_invalid"]
+
+
+@pytest.mark.parametrize("over,failure", [
+    ({"aborted": "llm_unload_unverified"}, "run_aborted:llm_unload_unverified"),
+    ({"environment": {"preflight": "SKIPPED"}}, "preflight_not_run"),
+    ({"llm": {"backend": "mock", "model_sha256": "x", "batch_size": 1, "unloads": 2, "context_resets": 2}},
+     "non_production_backend"),
+    ({"llm": {"backend": "ollama", "model_sha256": "x", "batch_size": 1, "unloads": 0, "context_resets": 0}},
+     "llm_isolation_counts_inconsistent"),
+])
+def test_verify_rejects_non_production_runs(tmp_path, key_store, over, failure):
+    from fakes import evidence
+    s = Signer(key_store)
+    mp, cp, share = evidence.build(tmp_path, s, manifest_over=over)
+    assert failure in verify_file(mp, s.public_pem(), str(share), cp)
+
+
+@pytest.mark.parametrize("key,bad", [
+    ("isolation", "inprocess"), ("isolation", "process"), ("require_secret_scanners", False),
+    ("verify_model_hash", False), ("model_allowlisted", False), ("smb_require_encryption", False),
+    ("in_process_egress_attempts", 1),
+])
+def test_verify_rejects_weakened_controls(tmp_path, key_store, key, bad):
+    from fakes import evidence
+    from surgic.audit.verify import REQUIRED_SECURITY
+    s = Signer(key_store)
+    mp, cp, share = evidence.build(tmp_path, s, manifest_over={"security": {**REQUIRED_SECURITY, key: bad}})
+    assert f"weakened_control:{key}" in verify_file(mp, s.public_pem(), str(share), cp)
+
+
+def test_verify_rejects_failed_or_partial_preflight(tmp_path, key_store):
+    from fakes import evidence
+    s = Signer(key_store)
+    pre = [{"name": "pf_airgap_ruleset", "ok": False, "code": "pf_disabled"}]
+    mp, cp, share = evidence.build(tmp_path, s, manifest_over={"environment": {"preflight": pre}})
+    fails = verify_file(mp, s.public_pem(), str(share), cp)
+    assert "preflight_not_passed" in fails and "preflight_missing:worker_sandbox" in fails
+
+
+def test_verify_requires_outputs_and_closure(tmp_path, key_store):
+    from fakes import evidence
+    s = Signer(key_store)
+    mp, cp, share = evidence.build(tmp_path, s)
+    fails = verify_file(mp, s.public_pem())
+    assert "outputs_not_checked" in fails and "closure_not_provided" in fails
+
+
+def test_verify_flags_unlisted_outputs(tmp_path, key_store):
+    from fakes import evidence
+    s = Signer(key_store)
+    mp, cp, share = evidence.build(tmp_path, s)
+    (share / evidence.RUN / "99999-planted").mkdir()
+    (share / evidence.RUN / "00001-abc" / "extra.txt").write_text("x")
+    fails = verify_file(mp, s.public_pem(), str(share), cp)
+    assert "unlisted_output:99999-planted" in fails and "unlisted_output:00001-abc/extra.txt" in fails
+
+
+def test_verify_binds_manifest_to_closure(tmp_path, key_store):
+    from fakes import evidence
+    s = Signer(key_store)
+    mp, cp, share = evidence.build(tmp_path, s, closure_over={"session_id": "b" * 32, "manifests": [],
+                                                             "started_at": 1500})
+    fails = verify_file(mp, s.public_pem(), str(share), cp)
+    for f in ("airgap_session_mismatch", "manifest_not_in_closure", "manifest_outside_airgap_window"):
+        assert f in fails
+
+
+def test_verify_expected_model(tmp_path, key_store):
+    from fakes import evidence
+    s = Signer(key_store)
+    mp, cp, share = evidence.build(tmp_path, s)
+    assert verify_file(mp, s.public_pem(), str(share), cp, expect_model="m" * 64) == []
+    assert "model_not_expected" in verify_file(mp, s.public_pem(), str(share), cp, expect_model="n" * 64)
 
 
 def test_signature_missing(tmp_path, key_store):
@@ -167,19 +231,11 @@ def test_pcap_empty_and_corrupt_raise(tmp_path):
         count_packets(str(p))
 
 
-def _closure(tmp_path, signer, egress_n=0, blocked_n=2, **over):
-    ev = tmp_path / "ev"
-    ev.mkdir(exist_ok=True)
-    (ev / "egress_audit.pcap").write_bytes(pcap(egress_n))
-    (ev / "pflog_blocked.pcap").write_bytes(pcap(blocked_n))
-    c = {"schema": CLOSURE_SCHEMA, "egress_packets": egress_n, "errors": [], "probe": {"blocked": True},
-         "ramdisk_devices_remaining": 0,
-         "ramdisk": {"teardown": [{"step": "zero_fill", "status": 0}, {"step": "detach", "status": 0}]},
-         "captures": [
-             {"name": "egress_audit.pcap", "packets": egress_n, "sha256": sha256_file(ev / "egress_audit.pcap")},
-             {"name": "pflog_blocked.pcap", "packets": blocked_n, "sha256": sha256_file(ev / "pflog_blocked.pcap")}]}
-    c.update(over)
-    return write_signed(c, ev / "closure.json", signer)[0]
+def _closure(tmp_path, signer, egress_n=0, blocked_n=2, blocked_size=40, **over):
+    from fakes import evidence
+    _, cpath, _ = evidence.build(tmp_path, signer, closure_over=over, egress_n=egress_n,
+                                 blocked_n=blocked_n, blocked_size=blocked_size)
+    return cpath
 
 
 def test_closure_verifies_zero_egress(tmp_path, key_store):
@@ -196,9 +252,10 @@ def test_closure_fails_on_egress_and_missing_enforcement(tmp_path, key_store):
 def test_closure_detects_swapped_pcap(tmp_path, key_store):
     s = Signer(key_store)
     path = _closure(tmp_path, s)
-    (tmp_path / "ev" / "egress_audit.pcap").write_bytes(pcap(0) + b"")  # same content -> ok
+    ev = tmp_path / "share" / "evidence" / "ts"
+    (ev / "egress_audit.pcap").write_bytes(pcap(0) + b"")  # same content -> ok
     assert verify_file(path, s.public_pem()) == []
-    (tmp_path / "ev" / "egress_audit.pcap").write_bytes(pcap(1))
+    (ev / "egress_audit.pcap").write_bytes(pcap(1))
     fails = verify_file(path, s.public_pem())
     assert "capture_hash_mismatch:egress_audit.pcap" in fails
 
@@ -207,6 +264,47 @@ def test_closure_ramdisk_not_zeroed(tmp_path, key_store):
     s = Signer(key_store)
     path = _closure(tmp_path, s, ramdisk={"teardown": [{"step": "zero_fill", "status": 1}]})
     assert "ramdisk_not_zero_filled" in verify_file(path, s.public_pem())
+
+
+def test_closure_rejects_payload_bearing_capture(tmp_path, key_store):
+    s = Signer(key_store)
+    path = _closure(tmp_path, s, blocked_size=400)
+    assert "capture_payload_not_truncated:pflog_blocked.pcap" in verify_file(path, s.public_pem())
+
+
+@pytest.mark.parametrize("over,failure", [
+    ({"capture_filter": "port 99999"}, "capture_filter_unexpected"),
+    ({"pf": {"rules_sha256": "0" * 64}}, "pf_rules_unexpected"),
+    ({"session_id": ""}, "session_id_missing"),
+])
+def test_closure_checks_capture_and_rules(tmp_path, key_store, over, failure):
+    s = Signer(key_store)
+    assert failure in verify_file(_closure(tmp_path, s, **over), s.public_pem())
+
+
+# ---------------------------------------------------------------- pcap sanitizing
+def test_truncate_pcap_drops_payload_keeps_count(tmp_path):
+    from surgic.audit.pcap import max_caplen, truncate
+    src, dst = tmp_path / "a.pcap", tmp_path / "b.pcap"
+    src.write_bytes(pcap(3)[:24] + b"".join(
+        struct.pack("<IIII", i, 0, 200, 200) + bytes(60) + b"SECRET-QNAME" + bytes(128) for i in range(3)))
+    assert truncate(str(src), str(dst), 64) == 3
+    assert count_packets(str(dst)) == 3 and max_caplen(str(dst)) == 64
+    assert b"SECRET-QNAME" not in dst.read_bytes()
+    src.write_bytes(pcap(0))
+    assert truncate(str(src), str(dst), 64) == 0 and count_packets(str(dst)) == 0
+
+
+def test_truncate_pcapng_all_packet_block_types(tmp_path):
+    from surgic.audit.pcap import max_caplen, truncate
+    data = pcapng(2)  # two EPBs with 4-byte payloads
+    body = struct.pack("<I", 300) + bytes(60) + b"SECRET-QNAME" + bytes(228)
+    data += struct.pack("<II", 3, 12 + len(body)) + body + struct.pack("<I", 12 + len(body))  # SPB
+    src, dst = tmp_path / "a.pcapng", tmp_path / "b.pcapng"
+    src.write_bytes(data)
+    assert truncate(str(src), str(dst), 64) == 3
+    assert count_packets(str(dst)) == 3 and max_caplen(str(dst)) <= 64
+    assert b"SECRET-QNAME" not in dst.read_bytes()
 
 
 # ---------------------------------------------------------------- netguard
