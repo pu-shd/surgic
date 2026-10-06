@@ -81,6 +81,11 @@ def install(level: int = logging.INFO, stream=None) -> None:
     handler.addFilter(ContentFreeFilter())
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     root.addHandler(handler)
+    # warnings.warn() text can quote document content; route it through the
+    # content-free filter instead of straight to stderr. Reset first: the
+    # hook is a no-op if logging believes it is already installed.
+    logging.captureWarnings(False)
+    logging.captureWarnings(True)
 
 
 class SafeError(Exception):

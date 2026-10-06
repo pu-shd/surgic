@@ -62,22 +62,20 @@ def _preflight(cfg, model_hash):
 def cmd_preflight(args) -> int:
     from .llm.identity import model_sha256
     cfg = _cfg(args)
-    _preflight(cfg, None if cfg.llm.backend == "ollama" else (lambda: model_sha256(cfg.llm)))
+    _preflight(cfg, lambda: model_sha256(cfg.llm))
     return 0
 
 
 def cmd_run(args) -> int:
-    from .audit.postscan import SecretScanners
-    from .detect import PhaseA
-    from .env.lifecycle import record_manifest
-    from .extract.ocr import default_ocr
+    from . import netguard
+    from .env import Runner
+    from .env.lifecycle import record_manifest, session
     from .llm.backend import make_backend
     from .llm.identity import model_sha256
     from .pipeline import Pipeline
+    from .worker import make_clients
 
-    from . import netguard
-
-    netguard.install()  # before any detector/model library is imported
+    netguard.install()  # before any model library is imported
     cfg = _cfg(args)
     st = cfg.storage
     input_dir = args.input or st.input_mount
@@ -85,26 +83,22 @@ def cmd_run(args) -> int:
     workspace = args.workspace or st.workspace
     backend = make_backend(cfg.llm)
     env_report: dict = {}
+    # Weights are hashed from disk before any model server starts.
+    sha = model_sha256(cfg.llm)
     if not args.skip_preflight:
-        if cfg.llm.backend == "ollama":
-            backend.start()  # digest is read from the private server
-        sha = model_sha256(cfg.llm)
         env_report["preflight"] = _preflight(cfg, lambda: sha)
+        # Drop the operator's sudo ticket: nothing in the run needs root, and
+        # teardown asks again.
+        Runner().run(["sudo", "-k"], check=False)
     else:
         if os.environ.get("SURGIC_ALLOW_NO_PREFLIGHT") != "1":
             raise SafeError("preflight_skip_not_allowed")
-        sha = model_sha256(cfg.llm)
         env_report["preflight"] = "SKIPPED"
-    pipe = Pipeline(
-        cfg, backend, PhaseA.from_config(cfg.detect), default_ocr(args.ocr),
-        SecretScanners(cfg.audit.gitleaks_binary, cfg.audit.trufflehog_binary,
-                       cfg.audit.require_secret_scanners),
-        _signer(cfg), sha, env_report,
-    )
+    analyzer, scanner = make_clients(cfg, args.ocr)
+    pipe = Pipeline(cfg, backend, signer=_signer(cfg), model_sha256=sha, environment=env_report,
+                    analyzer=analyzer, scanner=scanner, airgap=session(cfg))
     mpath, manifest = pipe.run(input_dir, output_dir, workspace)
-    if netguard.attempts:
-        raise SafeError("in_process_egress_attempted", count=len(netguard.attempts))
-    if not args.skip_preflight:
+    if session(cfg):
         record_manifest(cfg, mpath)
     print(json.dumps({"manifest": mpath, **manifest["summary"]}))
     return 0 if manifest["summary"]["quarantined"] == 0 else 3
@@ -114,7 +108,7 @@ def cmd_verify(args) -> int:
     from .audit.verify import verify_file
     with open(args.pubkey, "rb") as f:
         pem = f.read()
-    failures = verify_file(args.file, pem, args.outputs)
+    failures = verify_file(args.file, pem, args.outputs, args.closure, args.expect_model)
     if failures:
         for x in failures:
             print("FAIL", x)
@@ -151,7 +145,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("verify", help="verify a signed manifest or closure")
     p.add_argument("file")
     p.add_argument("--pubkey", required=True)
-    p.add_argument("--outputs", help="output directory to re-hash against a manifest")
+    p.add_argument("--outputs", help="output share root (required for a manifest)")
+    p.add_argument("--closure", help="closure.json of the airgap session (required for a manifest)")
+    p.add_argument("--expect-model", help="model SHA-256 InfoSec approved; must match the manifest")
     p.set_defaults(fn=cmd_verify)
     return ap
 
@@ -163,6 +159,9 @@ def main(argv: list[str] | None = None) -> int:
         return args.fn(args)
     except SafeError as e:
         print(f"error: {e.code} {json.dumps(e.fields, sort_keys=True)}", file=sys.stderr)
+        return 2
+    except Exception as e:  # noqa: BLE001 - messages/tracebacks can hold paths or content
+        print(f"error: unexpected {type(e).__name__}", file=sys.stderr)
         return 2
 
 

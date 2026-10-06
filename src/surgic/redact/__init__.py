@@ -18,7 +18,17 @@ from ..extract import load_image_png
 from ..extract.base import CellRef, Document, PdfBox, PixelBox
 from .xlsx_redact import redact_xlsx
 
-PAD = 1.0  # points of padding around each redacted PDF word box
+PAD = 1.0       # points of padding around each redacted PDF word box
+OCR_PAD = 1.0   # OCR boxes; vector glyph paths fully inside are removed too
+
+# Document-level objects that can carry text outside page content: the
+# accessibility tree (/Alt, /ActualText, /T), name trees (JavaScript, embedded
+# files, destinations), forms (incl. XFA), actions, outlines, page labels,
+# article threads, XMP and private application data.
+_CATALOG_KEYS = ("StructTreeRoot", "MarkInfo", "Names", "Dests", "AcroForm", "OpenAction", "AA",
+                 "Outlines", "PageLabels", "Threads", "Metadata", "PieceInfo", "SpiderInfo",
+                 "OCProperties", "Perms", "Legal", "URI", "Collection", "Lang")
+_PAGE_KEYS = ("PieceInfo", "Metadata", "Thumb", "AA", "B", "StructParents", "Annots")
 
 
 @dataclass
@@ -29,6 +39,15 @@ class RenderResult:
     files: list[str] = field(default_factory=list)
 
 
+def _strip_objects(pdf: pymupdf.Document) -> None:
+    cat = pdf.pdf_catalog()
+    for key in _CATALOG_KEYS:
+        pdf.xref_set_key(cat, key, "null")
+    for page in pdf:
+        for key in _PAGE_KEYS:
+            pdf.xref_set_key(page.xref, key, "null")
+
+
 def _scrub_and_save(pdf: pymupdf.Document, out: str) -> None:
     pdf.scrub(attached_files=True, clean_pages=True, embedded_files=True, hidden_text=True,
               javascript=True, metadata=True, redactions=True, remove_links=True,
@@ -36,6 +55,7 @@ def _scrub_and_save(pdf: pymupdf.Document, out: str) -> None:
     pdf.set_metadata({})
     pdf.del_xml_metadata()
     pdf.set_toc([])
+    _strip_objects(pdf)
     pdf.save(out, garbage=4, deflate=True, clean=True, no_new_id=True)
 
 
@@ -54,13 +74,14 @@ def redact_pdf(doc: Document, spans: list[Span], out: str) -> int:
                 continue
             b = seg.loc
             page = pdf[b.page]
-            rect = pymupdf.Rect(b.x0 - PAD, b.y0 - PAD, b.x1 + PAD, b.y1 + PAD) & page.rect
+            pad = OCR_PAD if b.ocr else PAD
+            rect = pymupdf.Rect(b.x0 - pad, b.y0 - pad, b.x1 + pad, b.y1 + pad) & page.rect
             page.add_redact_annot(rect, fill=(0, 0, 0))
             touched.add(b.page)
             regions += 1
     for pno in touched:
         pdf[pno].apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_PIXELS,
-                                  graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
+                                  graphics=pymupdf.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
                                   text=pymupdf.PDF_REDACT_TEXT_REMOVE)
     _scrub_and_save(pdf, out)
     pdf.close()

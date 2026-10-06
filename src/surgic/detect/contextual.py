@@ -41,12 +41,15 @@ def _occurrences(hay: str, needle: str) -> list[int]:
     return out
 
 
-def contextual_spans(masked: Masked, backend: LLMBackend, chunk_chars: int,
-                     overlap: int) -> tuple[list[Span], PhaseBStats, set[str]]:
-    """Returns (spans in ORIGINAL coordinates, stats, accepted masked strings)."""
+def llm_accept(masked_text: str, backend: LLMBackend, chunk_chars: int,
+               overlap: int) -> tuple[dict[str, str], PhaseBStats]:
+    """Run the model over masked text. Returns {accepted masked string: category}.
+
+    Needs only the masked text, so it runs in the orchestrating process and
+    never touches a document file."""
     stats = PhaseBStats()
     accepted: dict[str, str] = {}  # masked text -> category
-    for off, chunk in chunks(masked.text, chunk_chars, overlap):
+    for off, chunk in chunks(masked_text, chunk_chars, overlap):
         stats.chunks += 1
         for f in backend.find(chunk):
             stats.findings += 1
@@ -62,18 +65,33 @@ def contextual_spans(masked: Masked, backend: LLMBackend, chunk_chars: int,
             else:
                 # Models normalize whitespace ("Halvorsen Maritime" for a value
                 # wrapped across lines): match any run of whitespace instead.
-                found = sorted({m.group(0) for m in _ws_pattern(f.text).finditer(chunk)})
+                found = sorted({m.group(0) for m in _ws_pattern(f.text).finditer(chunk)} - {""})
                 if not found:
                     stats.rejected += 1
                     continue
                 stats.relocated += 1
             for text in found:
-                accepted.setdefault(text, f.category)
+                if text.strip():
+                    accepted.setdefault(text, f.category)
             stats.by_category[f.category] = stats.by_category.get(f.category, 0) + 1
+    return accepted, stats
 
+
+def map_accepted(masked: Masked, accepted: dict[str, str]) -> list[Span]:
+    """Spans in ORIGINAL coordinates for every occurrence of each accepted
+    masked string. Strings absent from the masked text yield nothing."""
     spans: list[Span] = []
     for text, cat in accepted.items():
+        if not text.strip():
+            continue
         for p in _occurrences(masked.text, text):
             a, b = masked.to_original(p, p + len(text))
             spans.append(Span(a, b, cat, "llm"))
-    return spans, stats, set(accepted)
+    return spans
+
+
+def contextual_spans(masked: Masked, backend: LLMBackend, chunk_chars: int,
+                     overlap: int) -> tuple[list[Span], PhaseBStats, set[str]]:
+    """Returns (spans in ORIGINAL coordinates, stats, accepted masked strings)."""
+    accepted, stats = llm_accept(masked.text, backend, chunk_chars, overlap)
+    return map_accepted(masked, accepted), stats, set(accepted)

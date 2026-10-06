@@ -46,7 +46,7 @@ jobs:
         run: brew install tesseract gitleaks trufflehog
       - name: Native tests
         env:
-          SURGIC_MIN_TESTS: "115"
+          SURGIC_MIN_TESTS: "195"
         run: |
           python3.12 -m venv .venv
           .venv/bin/pip install -q --upgrade pip

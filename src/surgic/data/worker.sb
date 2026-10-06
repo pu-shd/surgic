@@ -1,0 +1,39 @@
+;; sandbox-exec profile for surgic document workers (see surgic/worker.py).
+;; Parameters: WORK (run workspace on the RAM disk), HOME.
+;;
+;; Reads are broadly allowed (Python, models, frameworks, LibreOffice); what a
+;; compromised parser could use to leak or escalate is denied.
+(version 1)
+(allow default)
+
+;; No network of any kind (the LLM is reached by the orchestrator, not here).
+(deny network*)
+
+;; Writes only inside the run workspace (plus the null/tty devices).
+(deny file-write*)
+(allow file-write*
+  (subpath (param "WORK"))
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/dtracehelper")
+  (regex #"^/dev/tty"))
+
+;; No Keychain: neither the files nor the security daemons.
+(deny file-read* (subpath (string-append (param "HOME") "/Library/Keychains")))
+(deny file-read* (subpath "/Library/Keychains"))
+(deny mach-lookup
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.securityd.xpc")
+  (global-name "com.apple.security.agent"))
+
+;; No privilege or automation helpers.
+(deny process-exec
+  (literal "/usr/bin/sudo")
+  (literal "/usr/bin/su")
+  (literal "/usr/bin/security")
+  (literal "/usr/bin/osascript")
+  (literal "/sbin/pfctl")
+  (literal "/usr/sbin/tcpdump")
+  (literal "/usr/bin/ssh")
+  (literal "/usr/bin/curl")
+  (literal "/usr/bin/nc"))

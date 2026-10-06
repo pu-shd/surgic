@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 os.environ.setdefault("SURGIC_ALLOW_MOCK", "1")
 os.environ.setdefault("SURGIC_ALLOW_FILE_KEY", "1")
+os.environ.setdefault("SURGIC_ALLOW_INPROCESS", "1")
 
 from surgic import netguard  # noqa: E402
 

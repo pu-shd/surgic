@@ -11,21 +11,25 @@ RULES_PATH = "/etc/pf.anchors/airgap.rules"
 SYSTEM_PF_CONF = "/etc/pf.conf"
 
 
-def render(smb_ip: str) -> str:
+def _on(iface: str) -> str:
+    return f"on {iface} " if iface else ""
+
+
+def render(smb_ip: str, iface: str = "") -> str:
     tmpl = resources.files("surgic.data").joinpath("airgap.rules.tmpl").read_text()
-    return tmpl.replace("{{SMB_SHARE_IP}}", smb_ip)
+    return tmpl.replace("{{SMB_SHARE_IP}}", smb_ip).replace("{{ON_IFACE}}", _on(iface))
 
 
 def rules_sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def expected_loaded_rules(smb_ip: str) -> list[str]:
+def expected_loaded_rules(smb_ip: str, iface: str = "") -> list[str]:
     """`pfctl -sr` normalized output that the template must produce."""
     return [
         "block drop in log all",
         "block drop out log all",
-        f"pass out quick inet proto tcp from any to {smb_ip} port = 445 flags S/SA keep state",
+        f"pass out quick {_on(iface)}inet proto tcp from any to {smb_ip} port = 445 flags S/SA keep state",
     ]
 
 
@@ -43,9 +47,9 @@ def pf_enabled(r: Runner) -> bool:
     return "Status: Enabled" in info
 
 
-def load(r: Runner, smb_ip: str) -> dict:
+def load(r: Runner, smb_ip: str, iface: str = "") -> dict:
     """Install rules file, load it as the main ruleset, enable pf (token)."""
-    text = render(smb_ip)
+    text = render(smb_ip, iface)
     was_enabled = pf_enabled(r)
     # Rule text goes via stdin to tee: no shell interpolation.
     r.run(["tee", RULES_PATH], root=True, stdin=text.encode(), code="pf_write_failed")
@@ -58,13 +62,13 @@ def load(r: Runner, smb_ip: str) -> dict:
             "token": m.group(1).decode() if m else ""}
 
 
-def verify(r: Runner, smb_ip: str) -> list[str]:
+def verify(r: Runner, smb_ip: str, iface: str = "") -> list[str]:
     """Return a list of problems (empty == compliant)."""
     problems = []
     if not pf_enabled(r):
         problems.append("pf_disabled")
     loaded = _normalize(r.out(["pfctl", "-s", "rules"], root=True, check=False))
-    expected = expected_loaded_rules(smb_ip)
+    expected = expected_loaded_rules(smb_ip, iface)
     if loaded != expected:
         extra_pass = [ln for ln in loaded if ln.startswith("pass") and ln not in expected]
         problems.append("pf_extra_pass_rules" if extra_pass else "pf_ruleset_mismatch")

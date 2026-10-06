@@ -113,6 +113,21 @@ def test_render_has_default_deny_and_only_smb_pass():
     assert "set skip on lo0" in text
 
 
+def test_render_binds_smb_rule_to_interface():
+    text = firewall.render(SMB, "en7")
+    passes = [ln for ln in text.splitlines() if ln.startswith("pass")]
+    assert passes == [f"pass out quick on en7 inet proto tcp from any to {SMB} port 445 flags S/SA keep state"]
+    loaded = "\n".join(firewall.expected_loaded_rules(SMB, "en7"))
+    assert firewall.verify(Runner(FakeRun(pf_rules(sr=loaded))), SMB, "en7") == []
+    # The unbound rule no longer satisfies a bound configuration.
+    assert firewall.verify(Runner(FakeRun(pf_rules())), SMB, "en7")
+
+
+def test_config_rejects_bad_interface_name():
+    with pytest.raises(ValueError):
+        NetworkConfig(smb_share_ip=SMB, smb_interface="en0; pass all")
+
+
 def test_pf_load_sequence():
     fr = FakeRun(pf_rules())
     fr.rules.insert(0, (("pfctl", "-E"), 0, "Token : 12345"))
@@ -156,7 +171,8 @@ def test_pf_restore():
 # ---------------------------------------------------------------- capture
 def test_egress_filter_excludes_only_smb_and_loopback():
     f = egress_audit.egress_filter(SMB)
-    assert f == f"not host {SMB} and not host 127.0.0.1 and not host ::1"
+    # Only SMB (TCP 445) and ARP with the share host are exempt, not every protocol to it.
+    assert f == f"not (host {SMB} and (tcp port 445 or arp)) and not host 127.0.0.1 and not host ::1"
 
 
 def test_capture_start_and_stop(tmp_path, monkeypatch):
@@ -176,7 +192,10 @@ def test_capture_start_and_stop(tmp_path, monkeypatch):
     st = egress_audit.start(r, SMB, str(tmp_path))
     assert spawned[0][:4] == ["sudo", "-n", "tcpdump", "-U"]
     assert spawned[0][-1] == egress_audit.egress_filter(SMB)
+    # macOS: "any" is Linux-only; pktap,all includes tunnel interfaces.
+    assert spawned[0][spawned[0].index("-i") + 1] == "pktap,all"
     assert "pflog0" in spawned[1]
+    assert spawned[1][spawned[1].index("-s") + 1] == str(egress_audit.PFLOG_SNAPLEN)
     monkeypatch.setattr(egress_audit, "alive", lambda pid: False)
     fr = FakeRun()
     log = egress_audit.stop(Runner(fr), st)
@@ -200,13 +219,37 @@ def test_capture_exit_detected(tmp_path):
 
 # ---------------------------------------------------------------- smb
 def test_smb_mount_ro_enforced(tmp_path, monkeypatch):
-    fr = FakeRun()
+    fr = FakeRun([(("smbutil", "statshares"), 0, json.dumps({"SMB_VERSION": "SMB_3.1.1",
+                                                              "SMB_CURR_ENCRYPT_ALGORITHM": "AES_128_GCM"}))])
     monkeypatch.setattr(smb, "is_read_only", lambda m: False)
     monkeypatch.setattr(smb.os.path, "ismount", lambda m: True)
     with pytest.raises(SafeError) as e:
         smb.mount(Runner(fr), "//u@10.20.30.40/in", str(tmp_path / "in"), read_only=True)
     assert e.value.code == "smb_input_not_read_only"
     assert fr.find("mount_smbfs")[0][2] == "nobrowse,nodev,nosuid,rdonly"
+    assert fr.find("diskutil", "unmount")
+
+
+@pytest.mark.parametrize("attrs,enc,problem", [
+    ({"SMB_VERSION": "SMB_3.1.1", "SMB_CURR_ENCRYPT_ALGORITHM": "AES_256_GCM"}, True, ""),
+    ({"SMB_VERSION": "SMB_3.0.2", "SMB_CURR_ENCRYPT_ALGORITHM": "None", "SIGNING_ON": "TRUE"}, True, "smb_not_encrypted"),
+    ({"SMB_VERSION": "SMB_3.0.2", "SMB_CURR_ENCRYPT_ALGORITHM": "None", "SIGNING_ON": "TRUE"}, False, ""),
+    ({"SMB_VERSION": "SMB_3.0.2", "SIGNING_SUPPORTED": "TRUE"}, False, "smb_not_signed"),
+    ({"SMB_VERSION": "SMB_2.1", "SMB_CURR_ENCRYPT_ALGORITHM": "AES_128_CCM"}, True, "smb_version_below_3"),
+    ({}, False, "smb_session_unknown"),
+])
+def test_smb_transport_policy(attrs, enc, problem):
+    fr = FakeRun([(("smbutil", "statshares"), 0, json.dumps({"share": [attrs]}) if attrs else "")])
+    assert smb.transport_problem(Runner(fr), "/mnt/x", enc) == problem
+
+
+def test_smb_insecure_mount_is_unmounted(tmp_path, monkeypatch):
+    fr = FakeRun([(("smbutil", "statshares"), 0, json.dumps({"SMB_VERSION": "SMB_2.1"}))])
+    monkeypatch.setattr(smb, "is_read_only", lambda m: True)
+    monkeypatch.setattr(smb.os.path, "ismount", lambda m: True)
+    with pytest.raises(SafeError) as e:
+        smb.mount(Runner(fr), "//u@10.20.30.40/out", str(tmp_path / "o"), read_only=False)
+    assert e.value.code == "smb_transport_insecure"
     assert fr.find("diskutil", "unmount")
 
 
@@ -218,16 +261,18 @@ def test_share_url_and_fs_type():
 
 
 # ---------------------------------------------------------------- preflight
-LSOF = """COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
-llama-ser 101 u   3u  IPv4 0x1      0t0  TCP 127.0.0.1:8088 (LISTEN)
-rapportd  102 u   4u  IPv6 0x2      0t0  TCP *:49152 (LISTEN)
-mDNSResp  103 u   5u  IPv4 0x3      0t0  UDP *:5353
-"""
+# lsof +c 0 -F pcPn: full command names (may contain spaces), one field per line.
+LSOF_LOOPBACK = "p101\ncllama-server\nPTCP\nn127.0.0.1:8088\n"
+LSOF = LSOF_LOOPBACK + ("p102\ncrapportd\nPTCP\nn*:49152\n"
+                        "p103\ncmDNSResponder\nPUDP\nn*:5353\n"
+                        "p104\ncControl Center\nPTCP\nn[::1]:7000\nPTCP\nn*:5000\n")
 
 
 def test_listener_parsing():
-    assert preflight.non_loopback_listeners(LSOF, []) == ["mDNSResp", "rapportd"]
-    assert preflight.non_loopback_listeners(LSOF, ["rapportd", "mDNSResp"]) == []
+    assert preflight.non_loopback_listeners(LSOF, []) == ["Control Center", "mDNSResponder", "rapportd"]
+    assert preflight.non_loopback_listeners(LSOF, ["rapportd", "mDNSResponder", "Control Center"]) == []
+    # The allowlist matches whole names: a 9-character prefix is not enough.
+    assert preflight.non_loopback_listeners(LSOF, ["mDNSRespo", "rapportd", "Control Center"]) == ["mDNSResponder"]
 
 
 def _listener_check(fr):
@@ -246,6 +291,13 @@ def test_listener_check_fails_when_lsof_cannot_run():
 
     c = _listener_check(SudoRefused())
     assert not c.ok and c.code == "lsof_failed"
+
+
+def test_listener_check_uses_full_names():
+    fr = FakeRun([(("lsof",), 0, LSOF_LOOPBACK)])
+    _listener_check(fr)
+    cmd = fr.find("lsof")[0]
+    assert cmd[cmd.index("+c") + 1] == "0" and cmd[cmd.index("-F") + 1] == "pcPn"
 
 
 def test_listener_check_no_matches_is_ok():
@@ -269,10 +321,15 @@ def test_bluetooth_and_wifi_parsing():
 
 
 def _cfg(tmp_path):
-    cfg = Config(network=NetworkConfig(smb_share_ip=SMB))
+    cfg = Config(network=NetworkConfig(smb_share_ip=SMB, smb_interface="en7"))
     cfg.audit.require_secret_scanners = True
     cfg.llm.model_sha256 = ["good"]
+    cfg.storage.state_file = str(tmp_path / "state.json")
     return cfg
+
+
+SMB_SECURE = json.dumps({"SHARE": {"SMB_VERSION": "SMB_3.1.1", "SMB_CURR_ENCRYPT_ALGORITHM": "AES_128_GCM",
+                                   "SIGNING_SUPPORTED": "TRUE"}})
 
 
 def test_preflight_all_fail_closed_on_hostile_host(tmp_path):
@@ -296,6 +353,10 @@ def test_preflight_enforce_empty_is_failure():
 def test_preflight_passes_when_compliant(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     cfg.audit.require_secret_scanners = False
+    (tmp_path / "state.json").write_text(json.dumps({"active": True, "session_id": "s1"}))
+    sandbox = tmp_path / "sandbox-exec"
+    sandbox.write_text("")
+    monkeypatch.setattr(preflight, "SANDBOX_EXEC", str(sandbox))
     rd = "/Volumes/RAMDisk"
     monkeypatch.setenv("TMPDIR", rd)
     monkeypatch.setattr(preflight.os.path, "realpath", lambda p: p)
@@ -306,8 +367,9 @@ def test_preflight_passes_when_compliant(tmp_path, monkeypatch):
     mounts = (f"//s@{SMB}/in on {cfg.storage.input_mount} (smbfs, read-only)\n"
               f"//s@{SMB}/out on {cfg.storage.output_mount} (smbfs)\n")
     bt = json.dumps({"SPBluetoothDataType": [{"controller_properties": {"controller_state": "attrib_off"}}]})
-    fr = FakeRun(pf_rules() + [
-        (("lsof",), 0, LSOF.splitlines()[0] + "\n" + LSOF.splitlines()[1] + "\n"),
+    fr = FakeRun(pf_rules(sr="\n".join(firewall.expected_loaded_rules(SMB, "en7"))) + [
+        (("lsof",), 0, LSOF_LOOPBACK), (("smbutil", "statshares"), 0, SMB_SECURE),
+        (("route", "-n", "get", SMB), 0, "   route to: 10.20.30.40\n  interface: en7\n"),
         (("hdiutil", "info"), 0, hdiutil_plist(rd)), (("mount",), 0, mounts),
         (("system_profiler",), 0, bt), (("sysctl", "vm.swapusage"), 0, "total = 0M (encrypted)"),
         (("networksetup", "-listallhardwareports"), 0, "Hardware Port: Wi-Fi\nDevice: en1\n"),
@@ -315,5 +377,35 @@ def test_preflight_passes_when_compliant(tmp_path, monkeypatch):
     checks = preflight.run_preflight(cfg, Runner(fr), model_hash=lambda: "good")
     failed = [c.name for c in checks if not c.ok]
     assert failed == []
-    assert len(checks) >= 14
+    from surgic.audit.verify import REQUIRED_PREFLIGHT
+    assert REQUIRED_PREFLIGHT - {"gitleaks_present", "trufflehog_present"} <= {c.name for c in checks}
     preflight.enforce(checks)
+
+
+@pytest.mark.parametrize("tamper,check", [
+    ("route", "smb_route_on_interface"), ("smb", "smb_transport_secure"),
+    ("sandbox", "worker_sandbox"), ("session", "airgap_session_active"), ("tmpdir", "tmpdir_on_ramdisk"),
+])
+def test_preflight_new_checks_fail_closed(tmp_path, monkeypatch, tamper, check):
+    cfg = _cfg(tmp_path)
+    cfg.audit.require_secret_scanners = False
+    state = {"active": tamper != "session", "session_id": "s1"}
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    sandbox = tmp_path / "sandbox-exec"
+    if tamper != "sandbox":
+        sandbox.write_text("")
+    monkeypatch.setattr(preflight, "SANDBOX_EXEC", str(sandbox))
+    rd = "/Volumes/RAMDisk"
+    # A sibling whose name merely starts with the RAM disk path is not on it.
+    monkeypatch.setenv("TMPDIR", rd + "2/tmp" if tamper == "tmpdir" else rd)
+    monkeypatch.setattr(preflight.os.path, "realpath", lambda p: p)
+    monkeypatch.setattr(preflight.os.path, "isdir", lambda p: True)
+    monkeypatch.setattr(preflight.os.path, "ismount", lambda p: True)
+    monkeypatch.setattr(preflight.smb, "is_read_only", lambda p: True)
+    smb_json = json.dumps({"SMB_VERSION": "SMB_2.1"}) if tamper == "smb" else SMB_SECURE
+    route = "interface: en0\n" if tamper == "route" else "interface: en7\n"
+    fr = FakeRun(pf_rules(sr="\n".join(firewall.expected_loaded_rules(SMB, "en7"))) + [
+        (("lsof",), 0, LSOF_LOOPBACK), (("smbutil", "statshares"), 0, smb_json),
+        (("route", "-n", "get", SMB), 0, route), (("hdiutil", "info"), 0, hdiutil_plist(rd))])
+    checks = {c.name: c for c in preflight.run_preflight(cfg, Runner(fr), model_hash=lambda: "good")}
+    assert not checks[check].ok, check

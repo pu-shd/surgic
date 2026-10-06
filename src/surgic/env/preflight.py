@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from typing import Callable
 
 from ..logging_safe import SafeError, log_event
+from ..paths import is_under
 from . import Runner, firewall, ramdisk, smb
+
+SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
 
 @dataclass
@@ -26,20 +29,21 @@ class Check:
 _LOOPBACK = re.compile(r"^(127\.\d+\.\d+\.\d+|\[::1\]|localhost):\d+$")
 
 
-def non_loopback_listeners(lsof_out: str, allowed: list[str]) -> list[str]:
-    bad = []
-    for line in lsof_out.splitlines()[1:]:
-        cols = line.split()
-        if len(cols) < 9:
-            continue
-        cmd, name = cols[0], cols[8]
-        if cols[7] == "UDP":
-            addr = name
-        else:
-            addr = name.split("->")[0]
-        if _LOOPBACK.match(addr) or cmd in allowed:
-            continue
-        bad.append(cmd)
+def non_loopback_listeners(lsof_f: str, allowed: list[str]) -> list[str]:
+    """Parse ``lsof -F pcPn`` output (full command names may contain spaces,
+    so the column format cannot be split reliably)."""
+    bad, cmd = [], ""
+    for line in lsof_f.splitlines():
+        tag, val = line[:1], line[1:]
+        if tag == "p":
+            cmd = ""
+        elif tag == "c":
+            cmd = val
+        elif tag == "n":
+            addr = val.split("->")[0]
+            if _LOOPBACK.match(addr) or cmd in allowed:
+                continue
+            bad.append(cmd or "?")
     return sorted(set(bad))
 
 
@@ -87,17 +91,20 @@ def run_preflight(cfg, r: Runner, model_hash: Callable[[], str] | None = None) -
         checks.append(Check(name, ok, code if not ok else ""))
 
     def pf_ok():
-        problems = firewall.verify(r, cfg.network.smb_share_ip)
+        problems = firewall.verify(r, cfg.network.smb_share_ip, cfg.network.smb_interface)
         return True if not problems else ",".join(problems)
 
     add("pf_airgap_ruleset", pf_ok)
 
     def listeners():
-        p = r.run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-iUDP"], root=True, check=False)
+        # +c 0: full command names, so the allowlist is not matched on a
+        # 9-character prefix another process could share.
+        p = r.run(["lsof", "+c", "0", "-nP", "-iTCP", "-sTCP:LISTEN", "-iUDP", "-F", "pcPn"],
+                  root=True, check=False)
         out = (p.stdout or b"").decode("utf-8", errors="replace")
         # lsof exits 1 with no output and no stderr when nothing matches; any
         # other failure (e.g. sudo refused) must not read as "no listeners".
-        if not out.startswith("COMMAND") and not (p.returncode == 1 and not (p.stderr or b"").strip()):
+        if not out.startswith("p") and not (p.returncode == 1 and not (p.stderr or b"").strip()):
             return "lsof_failed"
         bad = non_loopback_listeners(out, pf.allowed_listeners)
         return True if not bad else "listeners:" + ",".join(bad)[:100]
@@ -108,23 +115,47 @@ def run_preflight(cfg, r: Runner, model_hash: Callable[[], str] | None = None) -
     if pf.require_bluetooth_off:
         add("bluetooth_off", lambda: bluetooth_off(r))
     add("ramdisk_ram_backed", lambda: ramdisk.ram_backed_device(r, st.ramdisk_mount) is not None)
-    add("tmpdir_on_ramdisk",
-        lambda: os.path.realpath(os.environ.get("TMPDIR", "/tmp")).startswith(st.ramdisk_mount))
-    add("workspace_on_ramdisk",
-        lambda: os.path.isdir(st.workspace) and os.path.realpath(st.workspace).startswith(st.ramdisk_mount))
+    add("tmpdir_on_ramdisk", lambda: is_under(os.environ.get("TMPDIR", "/tmp"), st.ramdisk_mount))
+    add("workspace_on_ramdisk", lambda: os.path.isdir(st.workspace) and is_under(st.workspace, st.ramdisk_mount))
     add("input_share_read_only",
         lambda: os.path.ismount(st.input_mount) and smb.is_read_only(st.input_mount))
     add("input_share_is_smb", lambda: smb.fs_type(r, st.input_mount) == "smbfs")
     add("output_share_is_smb", lambda: smb.fs_type(r, st.output_mount) == "smbfs")
+
+    def smb_secure():
+        for m in (st.input_mount, st.output_mount):
+            problem = smb.transport_problem(r, m, cfg.network.smb_require_encryption)
+            if problem:
+                return problem
+        return True
+
+    add("smb_transport_secure", smb_secure)
+
+    def smb_route():
+        iface = cfg.network.smb_interface
+        if not iface:
+            return "smb_interface_not_configured"
+        return smb.route_interface(r, cfg.network.smb_share_ip) == iface or "smb_route_wrong_interface"
+
+    add("smb_route_on_interface", smb_route)
+    add("worker_sandbox", lambda: (cfg.isolation.mode == "sandbox" and os.path.exists(SANDBOX_EXEC))
+        or "worker_sandbox_off")
+
+    def airgap_session():
+        from .lifecycle import session
+        return bool(session(cfg)) or "no_active_airgap_session"
+
+    add("airgap_session_active", airgap_session)
     add("core_dumps_disabled", lambda: resource.getrlimit(resource.RLIMIT_CORE)[0] == 0)
     add("swap_encrypted", lambda: swap_encrypted(r))
     add("llm_loopback_only", lambda: cfg.llm.host in ("127.0.0.1", "::1"))
     if cfg.audit.require_secret_scanners:
         add("gitleaks_present", lambda: shutil.which(cfg.audit.gitleaks_binary) is not None)
         add("trufflehog_present", lambda: shutil.which(cfg.audit.trufflehog_binary) is not None)
-    if pf.verify_model_hash and model_hash is not None:
+    if pf.verify_model_hash:
         add("model_hash_allowlisted",
-            lambda: model_hash() in set(cfg.llm.model_sha256) or "model_hash_not_allowlisted")
+            lambda: (model_hash is not None and model_hash() in set(cfg.llm.model_sha256))
+            or "model_hash_not_allowlisted")
 
     for c in checks:
         log_event("preflight", ok=c.ok, step=c.name, reason=c.code[:128] or None)

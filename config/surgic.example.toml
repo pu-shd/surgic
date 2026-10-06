@@ -2,7 +2,9 @@
 
 [network]
 smb_share_ip = "10.0.0.5"            # the ONLY host pf permits (TCP 445); by IP, no DNS
-capture_dir = "/Volumes/RAMDisk/audit"
+smb_interface = "en0"                # SMB VLAN interface; pf pass rule and route are bound to it
+smb_require_encryption = true        # SMB3 encryption required (else signing is still required)
+# capture_dir defaults to <ramdisk>/audit and must be on the RAM disk
 probe_ip = "192.0.2.1"               # TEST-NET-1; the egress probe to it must be blocked
 
 [storage]
@@ -18,6 +20,7 @@ record_input_paths = false           # keep false: file names can be sensitive
 backend = "ollama"                   # ollama | llamacpp | mlx
 model_path = "qwen3.6:27b"           # ollama: model tag; llamacpp: GGUF path; mlx: model dir
 model_sha256 = []                    # REQUIRED allowlist; provision.zsh prints the value
+ollama_models_dir = "~/.ollama/models"  # blobs are re-hashed from here before every run
 # Note: Ollama's qwen3.6 GGUF did not load in llama.cpp 0.5.0 (Homebrew); use Ollama for it.
 host = "127.0.0.1"
 port = 8088
@@ -40,6 +43,9 @@ allowed_listeners = []               # process names permitted to listen on non-
 require_wifi_off = true
 require_bluetooth_off = true
 verify_model_hash = true
+
+[isolation]
+mode = "sandbox"                     # parsers run in sandbox-exec'd workers; required for VERIFIED
 
 [audit]
 keychain_service = "com.surgic.manifest-signing"

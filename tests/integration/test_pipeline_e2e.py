@@ -45,6 +45,16 @@ def run_pipeline(corpus, phase_a, ocr, key_store, scanners, batch_size=1, backen
     return p, backend, mpath, manifest
 
 
+# Failures a test run is expected to produce (it is not a production run);
+# anything else - especially about outputs - is a real failure.
+NON_PRODUCTION = ("weakened_control:", "non_production_backend", "preflight_", "closure_not_provided",
+                  "model_not_expected")
+
+
+def output_failures(fails):
+    return [f for f in fails if not f.startswith(NON_PRODUCTION)]
+
+
 def output_texts(out: Path) -> dict[str, str]:
     texts = {}
     for f in out.rglob("*"):
@@ -84,11 +94,15 @@ def test_end_to_end_corpus(corpus, phase_a, ocr, key_store, fake_scanners):
     assert not backend.is_loaded()
     # Nothing left in the workspace; quarantined docs have no output dir.
     assert list((corpus / "ws").iterdir()) == []
+    run_dir = corpus / "out" / man["run_id"]
     for d in quarantined:
-        assert not (corpus / "out" / d["doc_id"]).exists()
-    # Signed manifest verifies against outputs, and contains no sensitive values.
+        assert not (run_dir / d["doc_id"]).exists()
+    assert man["security"]["isolation"] == "inprocess" and man["aborted"] == ""
+    # Signed manifest's outputs verify; it is (correctly) not a production run.
     pem = (corpus / "out" / "manifests" / "pubkey.pem").read_bytes()
-    assert verify_file(mpath, pem, str(corpus / "out")) == []
+    fails = verify_file(mpath, pem, str(corpus / "out"))
+    assert output_failures(fails) == [], fails
+    assert "weakened_control:isolation" in fails and "non_production_backend" in fails
     raw_manifest = Path(mpath).read_text()
     for v in make.ALL_VALUES + ["memo.pdf", "payroll.xlsx"]:
         assert v not in raw_manifest
@@ -119,7 +133,36 @@ def test_unverified_unload_aborts_run(corpus, regex_only, ocr, key_store):
     with pytest.raises(SafeError) as e:
         run_pipeline(corpus, regex_only, ocr, key_store, None, backend=FailingUnload(cfg.llm, terms=terms()))
     assert e.value.code == "llm_unload_unverified"
-    assert not (corpus / "out" / "manifests").exists()
+    # Nothing was released, and a signed manifest records the abort.
+    released = [p for p in (corpus / "out").iterdir() if p.name != "manifests"]
+    assert released == []
+    [mpath] = (corpus / "out" / "manifests").glob("*.manifest.json")
+    man = json.loads(mpath.read_text())
+    assert man["aborted"] == "llm_unload_unverified"
+    assert all(d["status"] != "clean" and not d["outputs"] for d in man["documents"])
+    pem = (corpus / "out" / "manifests" / "pubkey.pem").read_bytes()
+    assert "run_aborted:llm_unload_unverified" in verify_file(str(mpath), pem, str(corpus / "out"))
+
+
+def test_in_process_egress_attempt_releases_nothing(corpus, regex_only, ocr, key_store, monkeypatch):
+    from surgic import netguard
+    monkeypatch.setattr(netguard, "attempts", ["connect"])
+    with pytest.raises(SafeError) as e:
+        run_pipeline(corpus, regex_only, ocr, key_store, None)
+    assert e.value.code == "in_process_egress_attempted"
+    assert [p.name for p in (corpus / "out").iterdir()] == ["manifests"]
+
+
+def test_hidden_files_and_symlinks_are_recorded(corpus, regex_only, ocr, key_store):
+    import os as _os
+    (corpus / "in" / ".hidden.txt").write_text("SSN 219-09-9999")
+    (corpus / "in" / ".snapshot").mkdir()
+    (corpus / "in" / ".snapshot" / "old.txt").write_text("x")
+    _os.symlink(corpus / "in" / "notes.txt", corpus / "in" / "link.txt")
+    _, _, _, man = run_pipeline(corpus, regex_only, ocr, key_store, None)
+    reasons = sorted(d["reason"] for d in man["documents"] if d["status"] == "skipped")
+    assert reasons.count("hidden_file") == 1 and reasons.count("hidden_dir") == 1
+    assert reasons.count("symlink") == 1
 
 
 class LeakyRender:
@@ -136,8 +179,8 @@ class LeakyRender:
 
 
 def test_renderer_bug_is_quarantined_not_released(corpus, regex_only, ocr, key_store, monkeypatch):
-    import surgic.pipeline as pl
-    monkeypatch.setattr(pl, "render", LeakyRender())
+    import surgic.redact as rd
+    monkeypatch.setattr(rd, "render", LeakyRender())
     _, _, mpath, man = run_pipeline(corpus, regex_only, ocr, key_store, None)
     released = [d for d in man["documents"] if d["status"] == "clean"]
     assert released == []
@@ -146,14 +189,17 @@ def test_renderer_bug_is_quarantined_not_released(corpus, regex_only, ocr, key_s
     for d in q:
         assert d["postscan"]["passed"] is False
         assert 0 <= d["rescans"] <= 2
-        assert not (corpus / "out" / d["doc_id"]).exists()
+        assert not (corpus / "out" / man["run_id"] / d["doc_id"]).exists()
 
 
 def test_cli_run_and_verify(corpus, tmp_path, monkeypatch, capsys, key_store):
+    """Full CLI run with real worker processes (unsandboxed "process" mode,
+    which also runs on Linux CI)."""
     from surgic import cli
     cfgf = tmp_path / "c.toml"
     cfgf.write_text('[network]\nsmb_share_ip = "10.0.0.5"\n[llm]\nbackend = "mock"\n'
-                    '[audit]\nrequire_secret_scanners = false\n[detect]\nspacy_model = "en_core_web_sm"\n')
+                    '[audit]\nrequire_secret_scanners = false\n[detect]\nspacy_model = "en_core_web_sm"\n'
+                    '[isolation]\nmode = "process"\n')
     for f in ("scan.pdf", "whiteboard.png", "letter.docx", "corrupt.pdf"):
         (corpus / "in" / f).unlink(missing_ok=True)
     monkeypatch.setenv("SURGIC_KEY_FILE", key_store.path.as_posix())
@@ -164,9 +210,17 @@ def test_cli_run_and_verify(corpus, tmp_path, monkeypatch, capsys, key_store):
     out = capsys.readouterr().out.strip().splitlines()[-1]
     res = json.loads(out)
     assert rc == 0 and res["clean"] == 3 and res["quarantined"] == 0
+    man = json.loads(open(res["manifest"]).read())
+    assert man["security"]["isolation"] == "process"
     pub = corpus / "out" / "manifests" / "pubkey.pem"
-    assert cli.main(["verify", res["manifest"], "--pubkey", str(pub), "--outputs", str(corpus / "out")]) == 0
-    assert "VERIFIED" in capsys.readouterr().out
+    # A mock, unsandboxed, preflight-skipped run must never verify...
+    assert cli.main(["verify", res["manifest"], "--pubkey", str(pub), "--outputs", str(corpus / "out")]) == 1
+    lines = capsys.readouterr().out.splitlines()
+    fails = [ln.removeprefix("FAIL ") for ln in lines if ln.startswith("FAIL ")]
+    for f in ("preflight_not_run", "non_production_backend", "weakened_control:isolation", "closure_not_provided"):
+        assert f in fails
+    # ...but everything it released matches the manifest.
+    assert output_failures(fails) == [], fails
 
 
 def test_cli_refuses_skip_preflight_without_opt_in(tmp_path, monkeypatch, capsys):
@@ -176,6 +230,15 @@ def test_cli_refuses_skip_preflight_without_opt_in(tmp_path, monkeypatch, capsys
     monkeypatch.delenv("SURGIC_ALLOW_NO_PREFLIGHT", raising=False)
     rc = cli.main(["run", "-c", str(cfgf), "--skip-preflight"])
     assert rc == 2 and "preflight_skip_not_allowed" in capsys.readouterr().err
+
+
+def test_cli_unexpected_error_is_content_free(tmp_path, capsys):
+    from surgic import cli
+    cfgf = tmp_path / "Margaret Thornbury salary.toml"
+    cfgf.write_text("not = [valid toml")
+    assert cli.main(["preflight", "-c", str(cfgf)]) == 2
+    err = capsys.readouterr().err
+    assert "Thornbury" not in err and err.startswith("error: unexpected")
 
 
 def test_record_paths_off_by_default(corpus, regex_only, ocr, key_store):

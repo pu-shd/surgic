@@ -10,6 +10,7 @@ from .base import Document, PixelBox, TextBuilder, UnsupportedDocument
 from .convert import convert
 from .ocr import OcrFn
 from .pdf import extract_pdf
+from .sniff import check_magic, check_text
 from .xlsx import extract_xlsx
 
 PDF_EXT = {".pdf"}
@@ -34,6 +35,11 @@ def load_image_png(path: str) -> tuple[bytes, Image.Image]:
 
 
 def extract_image(path: str, doc_id: str, ocr: OcrFn) -> Document:
+    with Image.open(path) as im:
+        if getattr(im, "n_frames", 1) > 1:
+            # Only the first frame would be OCR'd and rendered: refuse rather
+            # than silently drop pages.
+            raise UnsupportedDocument("multi_frame_image")
     png, _ = load_image_png(path)
     tb = TextBuilder()
     prev_line = None
@@ -52,16 +58,20 @@ def extract_text(path: str, doc_id: str) -> Document:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         text = raw.decode("latin-1")
+    check_text(raw, text)
     return Document(doc_id=doc_id, kind="text", text=text, source_path=path, render_path=path)
 
 
 def extract(path: str, doc_id: str, work_dir: str, ocr: OcrFn) -> Document:
     ext = Path(path).suffix.lower()
+    check_magic(path, ext)
+    normalized = str(Path(work_dir, "normalized.pdf"))
     if ext in PDF_EXT:
-        return extract_pdf(path, doc_id, ocr)
+        Path(work_dir).mkdir(parents=True, exist_ok=True)
+        return extract_pdf(path, doc_id, ocr, normalized_out=normalized)
     if ext in OFFICE_TO_PDF_EXT:
         rendered = convert(path, work_dir, "pdf")
-        doc = extract_pdf(rendered, doc_id, ocr)
+        doc = extract_pdf(rendered, doc_id, ocr, normalized_out=normalized)
         doc.source_path = path
         return doc
     if ext in SHEET_EXT:
