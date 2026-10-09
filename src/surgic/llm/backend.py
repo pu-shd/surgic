@@ -13,7 +13,7 @@ import httpx
 from pydantic import ValidationError
 
 from ..logging_safe import SafeError, log_event
-from . import prompts
+from . import guard, prompts
 from .schema import Finding, Findings, json_schema
 
 OFFLINE_ENV = {
@@ -61,8 +61,9 @@ class LLMBackend(ABC):
 
     # ---- Phase B driver -------------------------------------------------
     def find(self, chunk: str) -> list[Finding]:
-        user = prompts.user_message(chunk)
         for attempt in range(self.cfg.max_retries + 1):
+            # A fresh, unguessable boundary per request: document text cannot close it.
+            user = prompts.user_message(chunk, guard.new_boundary(chunk))
             raw = self.complete_json(prompts.SYSTEM, user)
             try:
                 return Findings.model_validate(json.loads(raw)).findings

@@ -45,7 +45,7 @@ TEXT = "We supply Halvorsen Maritime. Later, Halvorsen Maritime renewed. SSN 219
 def run(responses, text=TEXT, spans=()):
     m = build(text, list(spans))
     b = ScriptedBackend(responses)
-    out, stats, accepted = contextual_spans(m, b, 10_000, 100)
+    out, stats, accepted = contextual_spans(m, b, 10_000, 100, canaries=False)
     return out, stats, b
 
 

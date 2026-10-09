@@ -30,6 +30,7 @@ from . import netguard
 from .audit.manifest import SCHEMA, sha256_file, write_signed
 from .audit.signing import Signer
 from .detect.contextual import llm_accept
+from .llm.guard import tripwire
 from .detect.spans import Span
 from .extract import SUPPORTED_EXT
 from .llm.backend import LLMBackend
@@ -69,6 +70,8 @@ class DocRecord:
     regions: int = 0
     ocr_pages: int = 0
     rescans: int = 0
+    injection_rules: dict[str, int] = field(default_factory=dict)  # tripwire hits by rule id
+    needs_review: bool = False
     postscan: dict = field(default_factory=dict)
     staged: list[str] = field(default_factory=list)  # RAM-disk copies awaiting release
     target_dir: str = ""                             # planned output_dir (set when staged)
@@ -266,8 +269,16 @@ class Pipeline:
             rec.kind, rec.ocr_pages = a["kind"], _int(a.get("ocr_pages"))
             rec.phase_a = _counts(a.get("phase_a"), _COUNT_KEY)
 
+            # Tripwire: text addressed to an AI model, before the model sees it.
+            rec.injection_rules = tripwire(a["masked_text"])
+            if rec.injection_rules:
+                if self.cfg.llm.injection_policy == "quarantine":
+                    rec.status, rec.reason = "quarantined", "injection_suspected"
+                    return
+                rec.needs_review = True
             accepted, stats = llm_accept(a["masked_text"], self.backend, self.cfg.llm.chunk_chars,
-                                         self.cfg.llm.chunk_overlap)
+                                         self.cfg.llm.chunk_overlap, canaries=self.cfg.llm.canaries,
+                                         canary_retries=self.cfg.llm.canary_retries)
             rec.phase_b = {k: v for k, v in stats.__dict__.items()}
             # Accepted strings without placeholders are original text: the
             # post-scan checks them independently of what the analyzer reports.
@@ -458,6 +469,7 @@ class Pipeline:
     def _manifest(self, records: list[DocRecord], started: int) -> dict:
         summary = {s: sum(1 for r in records if r.status == s)
                    for s in ("clean", "quarantined", "skipped", "withheld")}
+        summary["needs_review"] = sum(1 for r in records if r.status == "clean" and r.needs_review)
         summary["total"] = len(records)
         security = self.cfg.security_flags()
         security["isolation"] = (self.analyzer.isolation if self.analyzer.isolation == self.scanner.isolation

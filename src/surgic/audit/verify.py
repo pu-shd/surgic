@@ -28,6 +28,7 @@ REQUIRED_SECURITY = {
     "isolation": "sandbox", "require_secret_scanners": True, "verify_model_hash": True,
     "require_wifi_off": True, "require_bluetooth_off": True, "smb_require_encryption": True,
     "smb_interface_bound": True, "model_allowlisted": True, "in_process_egress_attempts": 0,
+    "llm_canaries": True,
 }
 PRODUCTION_BACKENDS = {"llamacpp", "ollama", "mlx"}
 CAPTURE_SNAPLEN = {"egress_audit.pcap": 64, "pflog_blocked.pcap": 96}

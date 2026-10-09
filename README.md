@@ -53,6 +53,16 @@ To change Python dependencies, edit `pyproject.toml` and run
 - `3`: some documents were quarantined (see the manifest).
 - `2`: the run aborted. This is fail-closed: nothing is released, and a signed manifest records the abort.
 
+## Prompt-injection red team
+
+```zsh
+scripts/redteam.zsh          # Promptfoo, local model, synthetic cases (redteam/), offline settings
+scripts/redteam.zsh --mock   # harness only, no model (what CI runs)
+```
+
+The defended pipeline must never miss a planted secret; model-only results are
+reported as a measurement. See `docs/INFOSEC.md` (Prompt-injection defenses).
+
 ## Tests
 
 ```zsh

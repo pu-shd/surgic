@@ -226,6 +226,7 @@ a { color: var(--brand-text); }
         <li>Approve the model, Qwen 3.6 27B (<code>qwen3.6:27b</code>), pinned to the exact weight digest recorded at provisioning (checked by <code>--expect-model</code>).</li>
         <li>Set the human-review sampling rate for released documents.</li>
         <li>Choose output naming: opaque (default; no input names leave the machine) or original (folders and names kept, redacted).</li>
+        <li>Choose the injection-tripwire policy (quarantine, the default, or release for human review) and accept the red-team results.</li>
       </ol>
     </section>
     <section class="callout infra" aria-labelledby="infra-h">
@@ -291,7 +292,7 @@ a { color: var(--brand-text); }
         <text class="dg-s" x="282" y="158">secrets, context;</text>
         <text class="dg-s" x="282" y="172">sees masked text only</text>
         <rect class="dg-tag-plain" x="282" y="196" width="108" height="16" rx="3"/>
-        <text class="dg-tag" x="336" y="208" text-anchor="middle">LOOPBACK ONLY</text>
+        <text class="dg-tag" x="336" y="208" text-anchor="middle">CANARY-CHECKED</text>
 
         <!-- Step 3 -->
         <rect class="dg-step dg-sbx" x="410" y="100" width="128" height="120" rx="6"/>
@@ -381,6 +382,9 @@ a { color: var(--brand-text); }
           <tr><td>Structured data never reaches the LLM</td>
               <td>Regex and Presidio redact first. The LLM sees placeholders such as <code>[US_SSN_1]</code>, never the values.</td>
               <td>Per-document counts in the manifest; values stored only as one-time HMACs</td></tr>
+          <tr><td>The model can't be steered into silence</td>
+              <td>A tripwire catches text aimed at the model; each request uses an unguessable data boundary; every chunk carries a synthetic secret, and a model that misses it is not trusted. An offline Promptfoo red team measures the rest.</td>
+              <td>Tripwire hits and canary counts per document. Red team on <code>qwen3.6:27b</code>: defended 24/24 held, model alone 23/24</td></tr>
           <tr><td>Nothing hidden survives</td>
               <td>PDF layers, cropped and off-page content are exposed and every page is OCR'd in full; hidden sheets and rows are unhidden. Text files carrying encoded blobs are quarantined.</td>
               <td>Per-document scan results</td></tr>
@@ -429,7 +433,7 @@ surgic verify evidence/&lt;ts&gt;/closure.json --pubkey pubkey.pem</pre></div>
     <ol class="risks">
       <li><div class="body"><h3>The signing key is software-protected</h3><p>It's stored in the login Keychain, so someone with the user's login could export it. Sandboxed parsers can't reach it.</p><p class="mit"><b>Mitigation available:</b> a Secure Enclave key via Jamf (in progress).</p></div></li>
       <li><div class="body"><h3>LLM recall is imperfect</h3><p>Unstructured secrets depend on model quality. In testing, Qwen 3.6 27B caught contextual secrets in prose but missed a client name in a spreadsheet cell.</p><p class="mit"><b>Recommended:</b> human spot-checks when a new document type is introduced.</p></div></li>
-      <li><div class="body"><h3>Prompt injection</h3><p>A document could try to steer the model. The worst case is under-redaction, never exfiltration.</p></div></li>
+      <li><div class="body"><h3>Prompt injection</h3><p>Tripwire, random boundaries and canaries stop blanket suppression; a targeted, disguised exemption for one value can still slip through (measured by the red team). Worst case: under-redaction, never exfiltration.</p></div></li>
       <li><div class="body"><h3>OCR limits</h3><p>Text that OCR can't read, such as poor handwriting, can't be detected.</p></div></li>
       <li><div class="body"><h3>Memory pressure could cause swapping</h3><p>Swap is encrypted with an ephemeral key, and the model (about 17 GB) leaves ample headroom.</p></div></li>
       <li><div class="body"><h3>Layer-2 traffic isn't filtered by the firewall</h3><p>This covers ARP and IPv6 neighbor discovery.</p><p class="mit"><b>Requires:</b> a static IP on a dedicated VLAN.</p></div></li>

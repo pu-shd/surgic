@@ -36,11 +36,12 @@ RUN pip install --no-cache-dir -e '.[dev,hyperscan]' \
 
 COPY config ./config
 COPY scripts ./scripts
+COPY redteam ./redteam
 COPY tests ./tests
 
 # Tests must never need the network; the suite's in-process guard enforces it.
 ENV SURGIC_TEST_SPACY=en_core_web_lg \
-    SURGIC_MIN_TESTS=200 \
+    SURGIC_MIN_TESTS=280 \
     HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
 CMD ["python", "-m", "pytest", "-p", "no:cacheprovider", "-rs", "tests"]

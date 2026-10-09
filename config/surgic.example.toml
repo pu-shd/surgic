@@ -32,6 +32,9 @@ chunk_overlap = 400
 temperature = 0.0
 max_retries = 2
 batch_size = 1                       # model unloaded after every batch (1 = every document)
+canaries = true                      # synthetic secret per chunk; a model that misses it is not trusted
+canary_retries = 1                   # retry with a fresh canary, then quarantine the document
+injection_policy = "quarantine"      # tripwire hit: "quarantine" or "review" (release flagged)
 
 [detect]
 spacy_model = "en_core_web_trf"

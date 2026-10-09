@@ -13,5 +13,5 @@ for m in en_core_web_lg en_core_web_sm; do
     || .venv/bin/python -m spacy download "$m"
 done
 
-export SURGIC_MIN_TESTS="${SURGIC_MIN_TESTS:-200}"
+export SURGIC_MIN_TESTS="${SURGIC_MIN_TESTS:-280}"
 exec .venv/bin/python -m pytest -rs tests "$@"

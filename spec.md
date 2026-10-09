@@ -30,6 +30,7 @@ Studio, with verifiable proof that no data left the machine or persisted on it.
 | S4 | **No cross-document leakage** | Model context is purged between documents and weights are unloaded between batches |
 | S5 | **Tamper-evident audit** | A signed manifest with input/output SHA-256 hashes, scan results and security settings, bound to the airgap session's signed closure record |
 | S6 | **Fail closed** | Any failed check aborts the run or quarantines the document; nothing unverified is released; an aborted run releases nothing |
+| S7 | **Steering resistance** | Text aimed at the model is caught by a tripwire, cannot forge the data boundary, and a model steered into silence is caught by per-chunk canaries; measured by an offline Promptfoo red team |
 
 ## Acceptance
 
