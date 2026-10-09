@@ -13,6 +13,20 @@ from ..logging_safe import SafeError
 
 RunFn = Callable[..., subprocess.CompletedProcess]
 
+# Absolute paths for every command run as root. sudo matches sudoers rules on the
+# resolved path, and the Jamf sudoers generator (surgic.jamf) is built from this
+# same table, so the allowlist and the commands actually issued cannot drift.
+PRIVILEGED = {
+    "pfctl": "/sbin/pfctl",
+    "ifconfig": "/sbin/ifconfig",
+    "tee": "/usr/bin/tee",
+    "tcpdump": "/usr/sbin/tcpdump",
+    "kill": "/bin/kill",
+    "mdutil": "/usr/bin/mdutil",
+    "lsof": "/usr/sbin/lsof",
+    "profiles": "/usr/bin/profiles",
+}
+
 
 class Runner:
     def __init__(self, run: RunFn = subprocess.run, popen=subprocess.Popen, sudo: bool = True) -> None:
@@ -21,7 +35,12 @@ class Runner:
         self.sudo = sudo
 
     def _cmd(self, cmd: Sequence[str], root: bool) -> list[str]:
-        return (["sudo", "-n"] if root and self.sudo else []) + list(cmd)
+        cmd = list(cmd)
+        if root:
+            if cmd[0] not in PRIVILEGED:
+                raise SafeError("unlisted_privileged_command", step=str(cmd[0])[:64])
+            cmd[0] = PRIVILEGED[cmd[0]]
+        return (["sudo", "-n"] if root and self.sudo else []) + cmd
 
     def run(self, cmd: Sequence[str], root: bool = False, check: bool = True,
             timeout: float = 600, code: str = "command_failed",

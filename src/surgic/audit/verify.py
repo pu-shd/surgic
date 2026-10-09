@@ -10,12 +10,16 @@ manifest does not list, and manifests the closure does not vouch for.
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import json
 from pathlib import Path, PurePosixPath
 
+from cryptography import x509
+
+from .attestation import attestation_claims, validate_chain
 from .manifest import CLOSURE_SCHEMA, SCHEMA, canonical, sha256_file
 from .pcap import PcapError, count_packets, max_caplen
-from .signing import load_public, pubkey_fingerprint, verify_sig
+from .signing import load_public, pubkey_fingerprint, spki, verify_sig
 
 REQUIRED_PREFLIGHT = {
     "pf_airgap_ruleset", "no_external_listeners", "wifi_off", "bluetooth_off", "ramdisk_ram_backed",
@@ -34,17 +38,73 @@ PRODUCTION_BACKENDS = {"llamacpp", "ollama", "mlx"}
 CAPTURE_SNAPLEN = {"egress_audit.pcap": 64, "pflog_blocked.pcap": 96}
 
 
-def _load_signed(path: str, pubkey_pem: bytes) -> tuple[dict | None, bytes, list[str]]:
+def _resolve_key(obj: dict, pubkey_pem: bytes | None, ca_pem: bytes | None,
+                 expect: dict | None, failures: list[str]):
+    """Return the public key to verify with, appending trust failures."""
+    block = obj.get("signer", {}) if isinstance(obj, dict) else {}
+    alg = block.get("alg")
+    pinned = load_public(pubkey_pem) if pubkey_pem else None
+    if alg == "Ed25519":
+        if pinned is None:
+            failures.append("no_trust_anchor")
+        return pinned
+    if alg != "ES256":
+        failures.append("unsupported_alg")
+        return None
+    chain = [x509.load_der_x509_certificate(base64.b64decode(c)) for c in block.get("cert_chain", [])]
+    pub = chain[0].public_key() if chain else pinned
+    if pub is None:
+        failures.append("no_trust_anchor")
+        return None
+    if pinned is None and not ca_pem:
+        failures.append("no_trust_anchor")
+    if pinned is not None and spki(pinned) != spki(pub):
+        failures.append("pinned_key_mismatch")
+    if ca_pem:
+        ts = obj.get("finished_at")
+        when = (dt.datetime.fromtimestamp(ts, dt.timezone.utc) if isinstance(ts, int)
+                else dt.datetime.now(dt.timezone.utc))
+        failures.extend(validate_chain(chain, x509.load_pem_x509_certificates(ca_pem), when))
+    if expect:
+        claims = attestation_claims(chain[0]) if chain else {}
+        for k, v in expect.items():
+            if str(claims.get(k)) != str(v):
+                failures.append(f"attestation_mismatch:{k}")
+    return pub
+
+
+def signer_summary(path: str) -> dict:
+    """Unverified, informational: signer block and attestation claims."""
+    obj = json.loads(Path(path).read_bytes())
+    block = obj.get("signer", {})
+    out = {k: v for k, v in block.items() if k != "cert_chain"}
+    chain = block.get("cert_chain", [])
+    if chain:
+        leaf = x509.load_der_x509_certificate(base64.b64decode(chain[0]))
+        out["subject"] = leaf.subject.rfc4514_string()
+        out["issuer"] = leaf.issuer.rfc4514_string()
+        out["attestation"] = attestation_claims(leaf)
+    return out
+
+
+def _load_signed(path: str, trust: dict) -> tuple[dict | None, bytes, list[str]]:
     p = Path(path)
     data = p.read_bytes()
     sig_path = Path(str(p) + ".sig")
     if not sig_path.exists():
         return None, data, ["signature_missing"]
-    pub = load_public(pubkey_pem)
+    try:
+        obj = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, data, ["not_json"]
+    if not isinstance(obj, dict):
+        return None, data, ["not_json"]
+    failures: list[str] = []
+    pub = _resolve_key(obj, trust.get("pubkey_pem"), trust.get("ca_pem"), trust.get("expect"), failures)
+    if pub is None:
+        return None, data, failures or ["no_trust_anchor"]
     if not verify_sig(pub, data, base64.b64decode(sig_path.read_bytes().strip())):
         return None, data, ["signature_invalid"]
-    obj = json.loads(data)
-    failures = []
     if canonical(obj) != data:
         failures.append("not_canonical")
     if obj.get("signer", {}).get("fingerprint") != pubkey_fingerprint(pub):
@@ -52,13 +112,21 @@ def _load_signed(path: str, pubkey_pem: bytes) -> tuple[dict | None, bytes, list
     return obj, data, failures
 
 
-def verify_file(path: str, pubkey_pem: bytes, outputs_dir: str | None = None,
+def verify_file(path: str, pubkey_pem: bytes | None = None, outputs_dir: str | None = None,
                 closure: str | None = None, expect_model: str | None = None,
+                ca_pem: bytes | None = None, expect: dict | None = None,
                 require_opaque_names: bool = False) -> list[str]:
-    """Return a list of failures; empty means verified. With
+    """Return a list of failures; empty means verified.
+
+    Trust anchors: ``pubkey_pem`` (pinned key, either algorithm) and/or
+    ``ca_pem`` (issuing CA bundle for ES256 certificate chains). At least one
+    is required. ``expect`` pins attestation claims (e.g. serial_number). The
+    closure a manifest is bound to must satisfy the same trust anchors. With
     ``require_opaque_names`` a run that released original (redacted) folder
-    and file names fails."""
-    obj, data, failures = _load_signed(path, pubkey_pem)
+    and file names fails.
+    """
+    trust = {"pubkey_pem": pubkey_pem, "ca_pem": ca_pem, "expect": expect}
+    obj, data, failures = _load_signed(path, trust)
     if obj is None:
         return failures
     schema = obj.get("schema")
@@ -69,7 +137,7 @@ def verify_file(path: str, pubkey_pem: bytes, outputs_dir: str | None = None,
         if not closure:
             failures.append("closure_not_provided")
         else:
-            failures += _bind(obj, data, closure, pubkey_pem)
+            failures += _bind(obj, data, closure, trust)
     elif schema == CLOSURE_SCHEMA:
         failures += _verify_closure(obj, Path(path).parent)
     else:
@@ -160,8 +228,8 @@ def _verify_manifest(obj: dict, outputs_dir: str | None, expect_model: str | Non
     return failures
 
 
-def _bind(man: dict, man_bytes: bytes, closure_path: str, pubkey_pem: bytes) -> list[str]:
-    cl, _, failures = _load_signed(closure_path, pubkey_pem)
+def _bind(man: dict, man_bytes: bytes, closure_path: str, trust: dict) -> list[str]:
+    cl, _, failures = _load_signed(closure_path, trust)
     if cl is None or cl.get("schema") != CLOSURE_SCHEMA:
         return ["closure:" + f for f in (failures or ["unknown_schema"])]
     failures = ["closure:" + f for f in failures + _verify_closure(cl, Path(closure_path).parent)]

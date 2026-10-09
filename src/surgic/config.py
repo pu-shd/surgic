@@ -23,6 +23,9 @@ class NetworkConfig(BaseModel):
     pf_anchor: str = "com.surgic.airgap"
     capture_dir: str = ""          # default: <ramdisk>/audit; must be on the RAM disk
     probe_ip: str = "192.0.2.1"   # RFC 5737 TEST-NET-1: must be blocked by pf
+    # True when the ruleset file is deployed root-owned by Jamf: surgic then only
+    # verifies it matches the rendered template and never writes it.
+    pf_rules_managed: bool = False
 
     @field_validator("smb_share_ip")
     @classmethod
@@ -124,6 +127,10 @@ class PreflightConfig(BaseModel):
     require_wifi_off: bool = True
     require_bluetooth_off: bool = True
     verify_model_hash: bool = True
+    required_profiles: list[str] = []   # configuration profile identifiers that must be installed
+    require_no_vpn: bool = True
+    require_no_network_extensions: bool = True
+    allowed_network_extensions: list[str] = []   # bundle IDs permitted to be active
 
 
 class IsolationConfig(BaseModel):
@@ -135,11 +142,26 @@ class IsolationConfig(BaseModel):
 
 
 class AuditConfig(BaseModel):
+    # "ed25519-keychain": seed in the login Keychain (default).
+    # "secure-enclave": ECDSA P-256 identity issued by a Jamf ACME payload with a
+    # hardware-bound, attested key; manifests carry the certificate chain.
+    signer: Literal["ed25519-keychain", "secure-enclave"] = "ed25519-keychain"
+    acme_subject_cn: str = "surgic-signing"
+    acme_issuer_contains: str = ""
+    require_hardware_bound: bool = True
     keychain_service: str = "com.surgic.manifest-signing"
     keychain_account: str = "surgic"
     gitleaks_binary: str = "gitleaks"
     trufflehog_binary: str = "trufflehog"
     require_secret_scanners: bool = True
+
+
+class JamfConfig(BaseModel):
+    service_user: str = "svc_surgic"     # local account granted the sudoers allowlist
+    profile_prefix: str = "org.example.surgic"   # reverse-DNS prefix for generated profiles
+    organization: str = "Example Org"
+    acme_directory_url: str = "https://acme.example.invalid/acme/directory"
+    acme_client_identifier: str = "REPLACE_WITH_ACME_CLIENT_IDENTIFIER"
 
 
 class Config(BaseModel):
@@ -150,6 +172,7 @@ class Config(BaseModel):
     audit: AuditConfig = AuditConfig()
     preflight: PreflightConfig = PreflightConfig()
     isolation: IsolationConfig = IsolationConfig()
+    jamf: JamfConfig = JamfConfig()
     source_sha256: str = ""
     source_path: str = ""
 

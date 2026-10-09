@@ -1,0 +1,11 @@
+{
+  "Identifier": "org.example.surgic.diskmanagement",
+  "Payload": {
+    "Restrictions": {
+      "ExternalStorage": "Disallowed",
+      "NetworkStorage": "Allowed"
+    }
+  },
+  "ServerToken": "F211AFF2-3AD9-59E3-9F17-D2826AEB6A30",
+  "Type": "com.apple.configuration.diskmanagement.settings"
+}

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>AllowAllAppsAccess</key>
+			<true/>
+			<key>Attest</key>
+			<true/>
+			<key>ClientIdentifier</key>
+			<string>REPLACE_WITH_ACME_CLIENT_IDENTIFIER</string>
+			<key>DirectoryURL</key>
+			<string>https://acme.example.invalid/acme/directory</string>
+			<key>HardwareBound</key>
+			<true/>
+			<key>KeyIsExtractable</key>
+			<false/>
+			<key>KeySize</key>
+			<integer>256</integer>
+			<key>KeyType</key>
+			<string>ECSECPrimeRandom</string>
+			<key>PayloadDisplayName</key>
+			<string>surgic signing (Secure Enclave)</string>
+			<key>PayloadIdentifier</key>
+			<string>org.example.surgic.acme.identity</string>
+			<key>PayloadType</key>
+			<string>com.apple.security.acme</string>
+			<key>PayloadUUID</key>
+			<string>D0CCF72E-CBBB-5BFF-A085-E5099BA0BD44</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>Subject</key>
+			<array>
+				<array>
+					<array>
+						<string>CN</string>
+						<string>surgic-signing</string>
+					</array>
+				</array>
+			</array>
+			<key>UsageFlags</key>
+			<integer>1</integer>
+		</dict>
+	</array>
+	<key>PayloadDisplayName</key>
+	<string>surgic: manifest signing identity</string>
+	<key>PayloadIdentifier</key>
+	<string>org.example.surgic.acme</string>
+	<key>PayloadOrganization</key>
+	<string>Example Org</string>
+	<key>PayloadRemovalDisallowed</key>
+	<true/>
+	<key>PayloadScope</key>
+	<string>System</string>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadUUID</key>
+	<string>CDFA3191-D81D-510C-9496-54A5CEE2B873</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+</dict>
+</plist>

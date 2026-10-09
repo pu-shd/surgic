@@ -68,11 +68,15 @@ def test_sign_verify_and_tamper(tmp_path, key_store):
     assert verify_file(mp, pem, str(share), cp) == []
     assert verify_file(cp, pem) == []
 
-    # 1-byte manifest tamper -> signature invalid
-    data = bytearray(open(mp, "rb").read())
-    data[10] ^= 0x01
-    open(mp, "wb").write(bytes(data))
+    # 1-byte tamper of a value (still valid JSON) -> signature invalid
+    data = open(mp, "rb").read()
+    tampered = data.replace(b'"status":"quarantined"', b'"status":"quarantinee"', 1)
+    assert tampered != data
+    open(mp, "wb").write(tampered)
     assert verify_file(mp, pem, str(share), cp) == ["signature_invalid"]
+    # Not JSON at all is rejected too.
+    open(mp, "wb").write(b"\x00" + data)
+    assert verify_file(mp, pem, str(share), cp) == ["not_json"]
 
 
 def test_verify_detects_output_tamper_and_wrong_key(tmp_path, key_store):

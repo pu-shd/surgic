@@ -25,7 +25,7 @@ class FakeRun:
     def __call__(self, cmd, capture_output=True, timeout=None, input=None):
         self.calls.append(list(cmd))
         self.stdin.append(input)
-        bare = cmd[2:] if cmd[:2] == ["sudo", "-n"] else cmd
+        bare = _bare(cmd)
         for prefix, rc, out in self.rules:
             if tuple(bare[:len(prefix)]) == tuple(prefix):
                 o = out(bare) if callable(out) else out
@@ -33,7 +33,15 @@ class FakeRun:
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     def find(self, *prefix):
-        return [c for c in self.calls if tuple((c[2:] if c[:2] == ["sudo", "-n"] else c)[:len(prefix)]) == prefix]
+        return [c for c in self.calls if tuple(_bare(c)[:len(prefix)]) == prefix]
+
+
+def _bare(cmd):
+    """Strip `sudo -n` and resolve absolute privileged paths to their bare name."""
+    c = list(cmd[2:] if cmd[:2] == ["sudo", "-n"] else cmd)
+    if c and c[0].startswith("/"):
+        c[0] = c[0].rsplit("/", 1)[1]
+    return c
 
 
 def hdiutil_plist(mount="/Volumes/RAMDisk", dev="/dev/disk9", ram=True):
@@ -134,9 +142,9 @@ def test_pf_load_sequence():
     st = firewall.load(Runner(fr), SMB)
     assert st["token"] == "12345" and st["was_enabled"] is True
     assert fr.find("tee", firewall.RULES_PATH)
-    assert fr.stdin[[i for i, c in enumerate(fr.calls) if "tee" in c][0]] == firewall.render(SMB).encode()
-    order = [c[2:4] for c in fr.calls if "pfctl" in c and c[3] in ("-n", "-f", "-E")]
-    assert order == [["pfctl", "-n"], ["pfctl", "-f"], ["pfctl", "-E"]]
+    assert fr.stdin[[i for i, c in enumerate(fr.calls) if "/usr/bin/tee" in c][0]] == firewall.render(SMB).encode()
+    order = [c[2:4] for c in fr.calls if "/sbin/pfctl" in c and c[3] in ("-n", "-f", "-E")]
+    assert order == [["/sbin/pfctl", "-n"], ["/sbin/pfctl", "-f"], ["/sbin/pfctl", "-E"]]
     assert all(c[:2] == ["sudo", "-n"] for c in fr.find("pfctl"))
 
 
@@ -190,7 +198,7 @@ def test_capture_start_and_stop(tmp_path, monkeypatch):
 
     r = Runner(FakeRun(), popen=P)
     st = egress_audit.start(r, SMB, str(tmp_path))
-    assert spawned[0][:4] == ["sudo", "-n", "tcpdump", "-U"]
+    assert spawned[0][:4] == ["sudo", "-n", "/usr/sbin/tcpdump", "-U"]
     assert spawned[0][-1] == egress_audit.egress_filter(SMB)
     # macOS: "any" is Linux-only; pktap,all includes tunnel interfaces.
     assert spawned[0][spawned[0].index("-i") + 1] == "pktap,all"

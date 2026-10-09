@@ -11,7 +11,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .signing import Signer
 
 SCHEMA = "surgic.manifest/v1"
 CLOSURE_SCHEMA = "surgic.closure/v1"
@@ -43,10 +42,10 @@ def sha256_file(path: str | Path) -> str:
     return h.hexdigest()
 
 
-def write_signed(obj: dict, path: str | Path, signer: Signer) -> tuple[str, str]:
-    """Write <path> (canonical JSON) and <path>.sig (base64 Ed25519). Returns paths."""
+def write_signed(obj: dict, path: str | Path, signer) -> tuple[str, str]:
+    """Write <path> (canonical JSON) and <path>.sig (base64 signature). Returns paths."""
     obj = dict(obj)
-    obj["signer"] = {"alg": "Ed25519", "fingerprint": signer.fingerprint()}
+    obj["signer"] = signer.signer_block()
     data = canonical(obj)
     p = Path(path)
     p.write_bytes(data)

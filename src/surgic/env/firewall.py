@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import stat
 from importlib import resources
 
+from ..logging_safe import SafeError
 from . import Runner
 
 RULES_PATH = "/etc/pf.anchors/airgap.rules"
@@ -47,19 +50,42 @@ def pf_enabled(r: Runner) -> bool:
     return "Status: Enabled" in info
 
 
-def load(r: Runner, smb_ip: str, iface: str = "") -> dict:
-    """Install rules file, load it as the main ruleset, enable pf (token)."""
+def check_managed_file(smb_ip: str, iface: str = "", path: str = RULES_PATH) -> list[str]:
+    """Problems with a Jamf-deployed ruleset file (empty == compliant)."""
+    try:
+        st = os.stat(path)
+        content = open(path, encoding="utf-8").read()
+    except OSError:
+        return ["pf_managed_rules_missing"]
+    problems = []
+    if st.st_uid != 0:
+        problems.append("pf_managed_rules_not_root_owned")
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        problems.append("pf_managed_rules_writable")
+    if content != render(smb_ip, iface):
+        problems.append("pf_managed_rules_mismatch")
+    return problems
+
+
+def load(r: Runner, smb_ip: str, iface: str = "", managed: bool = False) -> dict:
+    """Install (or, if Jamf-managed, verify) the rules file, load it as the main
+    ruleset, and enable pf (token)."""
     text = render(smb_ip, iface)
     was_enabled = pf_enabled(r)
-    # Rule text goes via stdin to tee: no shell interpolation.
-    r.run(["tee", RULES_PATH], root=True, stdin=text.encode(), code="pf_write_failed")
+    if managed:
+        problems = check_managed_file(smb_ip, iface)
+        if problems:
+            raise SafeError(problems[0])
+    else:
+        # Rule text goes via stdin to tee: no shell interpolation.
+        r.run(["tee", RULES_PATH], root=True, stdin=text.encode(), code="pf_write_failed")
     r.run(["ifconfig", "pflog0", "create"], root=True, check=False)
     r.run(["pfctl", "-n", "-f", RULES_PATH], root=True, code="pf_syntax_error")
     r.run(["pfctl", "-f", RULES_PATH], root=True, code="pf_load_failed")
     en = r.run(["pfctl", "-E"], root=True, code="pf_enable_failed")
     m = re.search(rb"Token\s*:\s*(\d+)", (en.stderr or b"") + (en.stdout or b""))
     return {"rules_sha256": rules_sha256(text), "was_enabled": was_enabled,
-            "token": m.group(1).decode() if m else ""}
+            "token": m.group(1).decode() if m else "", "managed": managed}
 
 
 def verify(r: Runner, smb_ip: str, iface: str = "") -> list[str]:
