@@ -6,7 +6,7 @@ Reads restricted documents from a read-only SMB share and redacts them in two ph
 
 Every document parser runs in a sandboxed worker process (no network, no Keychain, no sudo). It verifies the output files, writes cleaned documents, Ed25519-signed manifests and egress evidence to a second SMB share.
 
-See `spec.md` for requirements and `docs/INFOSEC.md` for the control mapping, the evidence it produces, and the residual risks.
+See `spec.md` for requirements, `docs/INFOSEC.md` for the control mapping, the evidence it produces, and the residual risks, and `docs/HOW_IT_WORKS.md` for the mechanics: processes, masking versus redaction, the re-scan loop, and what the signing key proves.
 
 ## Supported inputs → outputs
 
