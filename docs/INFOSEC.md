@@ -11,11 +11,47 @@ a second share with signed proof that nothing left the machine.
 in a network-disabled Linux container. It has **not yet been run on the target
 Mac Studio.**
 
+```mermaid
+flowchart LR
+    IN[("Input share<br/>SMB, read-only")]
+    OUT[("Output share<br/>SMB")]
+    NET["Internet / cloud"]
+    PC["Separate workstation<br/><code>surgic verify</code><br/>InfoSec's own key"]
+
+    subgraph MAC["Air-gapped Mac Studio · firewall allows only SMB to the share host"]
+        direction LR
+        subgraph RAM["RAM disk · wiped at the end"]
+            direction LR
+            S1["<b>1 · Find structured data</b><br/>regex + Presidio<br/>values masked before the LLM"]:::sbx
+            S2["<b>2 · Find context</b><br/>local LLM, loopback only<br/>sees masked text only"]
+            S3["<b>3 · Redact the file</b><br/>removes everything found in 1–2"]:::sbx
+            S4["<b>4 · Re-scan the output</b><br/>separate sandbox, never sees the input"]:::sbx
+            Q["Quarantined<br/>never released"]:::bad
+            ST["Staged until the<br/>whole run finishes"]:::ok
+        end
+        KEY["Signing key<br/>parsers can't reach it"]
+        MAN["Signed manifest + closure<br/>hashes, scan results, settings,<br/>header-only packet captures"]
+    end
+
+    IN --> S1 --> S2 --> S3 --> S4
+    S4 -- fail --> Q
+    S4 -- clean --> ST
+    ST --> OUT
+    KEY --> MAN --> OUT
+    OUT -. reads .-> PC
+    MAC x-- blocked --x NET
+
+    classDef default fill:#ffffff,stroke:#999999,color:#121212
+    classDef sbx fill:#ffffff,stroke:#2b6a3f,stroke-width:2px,color:#121212
+    classDef ok fill:#e9f3ec,stroke:#c9e2d1,color:#2b6a3f
+    classDef bad fill:#fffaf6,stroke:#e77500,color:#c1560e
+    style MAC fill:#ffffff,stroke:#333333,stroke-dasharray: 6 4
+    style RAM fill:#fffaf6,stroke:#f0d9c4
 ```
-SMB (read-only) ─► RAM disk ─► [sandboxed worker] 1. rules (regex + Presidio) ─► 2. local LLM ─► [sandboxed worker] 3. redact
-                                                                                                              │
-SMB (output) ◄── release only if every document finished ◄── [separate sandboxed worker] 4. re-scan the output files
-```
+
+Green outline: sandboxed process (no network, no Keychain, no sudo). Steps 1 and 2 only *find* things;
+step 1 also masks structured values in the working text so the model never sees them. The file
+itself is redacted once, in step 3, using everything found in steps 1 and 2.
 
 ## Controls and evidence
 
