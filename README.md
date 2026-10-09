@@ -36,8 +36,14 @@ surgic verify <share>/manifests/<run>.manifest.json --pubkey pubkey.pem --output
 surgic verify <share>/evidence/<ts>/closure.json --pubkey pubkey.pem
 ```
 
-Outputs land in `<share>/<run_id>/<doc_id>/`. The operator is asked for the
-sudo password again at teardown; the airgap stays up until it is given.
+Outputs land in `<share>/<run_id>/<doc_id>/` by default (`output_names =
+"opaque"`), so no input folder or file name leaves the machine. With
+`output_names = "original"` the input folder tree and file names are kept, e.g.
+`<share>/<run_id>/Clients/REDACTED_VALUE/renewal memo.txt.redacted.txt`: every
+folder and file name is run through the detectors and stripped of any value
+redacted from the document. `surgic verify --require-opaque-names` enforces the
+default. The operator is asked for the sudo password again at teardown; the
+airgap stays up until it is given.
 
 To change Python dependencies, edit `pyproject.toml` and run
 `scripts/lock_deps.zsh` online to regenerate `requirements/macos-arm64.lock`.

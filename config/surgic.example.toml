@@ -15,6 +15,8 @@ output_share = "//svc_surgic@SMB_HOST/sanitized"   # cleaned docs, manifests, ev
 input_mount = "~/.surgic/mnt/in"
 output_mount = "~/.surgic/mnt/out"
 record_input_paths = false           # keep false: file names can be sensitive
+output_names = "opaque"              # "opaque": <run_id>/<doc_id>/...; "original": input folders and
+                                     # names kept, each name redacted (see docs/INFOSEC.md)
 
 [llm]
 backend = "ollama"                   # ollama | llamacpp | mlx

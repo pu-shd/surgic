@@ -37,6 +37,13 @@ hash-locked set (`requirements/macos-arm64.lock`).
 
 ## How to verify
 
+`surgic verify` is the independent check. It runs on a separate workstation that never
+touched the documents, uses InfoSec's own copy of the public key, and reads only what
+is on the output share. It shows that the run happened as claimed, with every control
+in force, and that the share holds exactly what the run released. It doesn't rely on
+trusting the Mac Studio or its operator: any edit to a released file, the manifest or
+the evidence breaks a hash or a signature.
+
 On a separate workstation, using your own copy of the public key:
 
 ```
@@ -57,6 +64,25 @@ surgic verify evidence/<ts>/closure.json --pubkey pubkey.pem
 - the egress capture holds 0 packets and contains headers only;
 - the capture filter and firewall rules are the expected ones, and the firewall logged blocks;
 - the RAM disk was wiped.
+
+With `--require-opaque-names` it also fails any run that released original folder and file names.
+
+## Output naming
+
+| `output_names` | Output share layout | What leaves the machine |
+|---|---|---|
+| `opaque` (default) | `<run_id>/<doc_id>/<doc_id>.redacted.pdf` | No input names or folder structure |
+| `original` | `<run_id>/<input folders>/<name>.redacted.pdf` | The input folder tree and names, each redacted |
+
+In `original` mode, every folder and file name runs through the deterministic detectors
+(regex and Presidio, in the sandbox). Any value redacted from the document's body is also
+removed from its name, e.g. `Clients/Halvorsen Maritime/…` becomes `Clients/REDACTED_VALUE/…`.
+The orchestrator re-checks each name. A name that can't be made safe falls back to the
+opaque layout for that document; so does a name that collides with another document's
+after redaction.
+
+Names aren't reviewed by the LLM, so a context-only secret that appears *only* in a file
+name (never in the body) is not caught. The mode is recorded in the signed manifest.
 
 ## Fail-closed behavior
 
@@ -93,3 +119,4 @@ surgic verify evidence/<ts>/closure.json --pubkey pubkey.pem
 1. Accept the software-protected signing key for the pilot, or require the Secure Enclave option.
 2. Approve the model, Qwen 3.6 27B (`qwen3.6:27b`), pinned to the exact weight digest recorded at provisioning (pass it to `surgic verify --expect-model`).
 3. Set the human-review sampling rate for released documents.
+4. Choose output naming: opaque (default; no input names leave the machine) or original (folders and names kept, redacted). The verifier can enforce opaque names.

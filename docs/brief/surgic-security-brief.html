@@ -79,16 +79,34 @@ section { display: grid; gap: 14px; padding-block: 26px 0; min-width: 0; }
 code, .mono { font-family: var(--font-mono); font-size: 0.86em; }
 code { background: var(--panel); padding: 0.05em 0.35em; border-radius: 2px; overflow-wrap: anywhere; }
 
-/* Flow */
-.flow { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(7, 1fr); gap: 0; }
-.flow li {
-  position: relative; padding: 10px 10px 10px 12px; min-width: 0;
-  background: var(--panel); border-right: 2px solid #ffffff;
-  display: grid; gap: 2px; align-content: start;
-}
-.flow li.edge { background: #ececec; }
-.flow .k { font-family: var(--font-display); font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
-.flow .v { font-size: 13px; font-weight: 500; line-height: 1.3; }
+/* Flow diagram */
+.diagram { margin: 0; display: grid; gap: 6px; }
+.diagram svg { width: 100%; height: auto; display: block; font-family: var(--font-body); }
+.dg-k { font-family: var(--font-display); font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; fill: var(--muted); }
+.dg-t { font-size: 13px; font-weight: 500; fill: var(--ink); }
+.dg-h { font-family: var(--font-display); font-size: 13px; font-weight: 700; fill: var(--ink); }
+.dg-s { font-size: 11px; fill: var(--ink-2); }
+.dg-mono { font-family: var(--font-mono); font-size: 11.5px; fill: var(--ink); }
+.dg-tag { font-family: var(--font-display); font-size: 8.5px; font-weight: 700; letter-spacing: 0.08em; fill: var(--muted); }
+.dg-b { font-weight: 700; }
+.dg-ok { fill: var(--ok); }
+.dg-brand { fill: var(--brand-text); }
+.dg-share { fill: #ececec; stroke: #c9c9c9; }
+.dg-net { fill: #ffffff; stroke: var(--muted); stroke-dasharray: 4 3; }
+.dg-airgap { fill: none; stroke: var(--ink-2); stroke-width: 1.5; stroke-dasharray: 7 4; }
+.dg-ram { fill: var(--brand-tint); stroke: #f0d9c4; }
+.dg-step { fill: #ffffff; stroke: var(--rule); }
+.dg-sbx { stroke: var(--ok); stroke-width: 1.6; }
+.dg-tag-sbx { fill: var(--ok-tint); }
+.dg-tag-plain { fill: var(--panel); }
+.dg-num { fill: var(--brand); }
+.dg-numt { font-family: var(--font-display); font-size: 11.5px; font-weight: 800; fill: #ffffff; }
+.dg-pill-ok { fill: var(--ok-tint); stroke: #c9e2d1; }
+.dg-pill-bad { fill: #ffffff; stroke: #f0d9c4; }
+.dg-verify { fill: var(--ok-tint); stroke: #c9e2d1; }
+.dg-flow { fill: none; stroke: #333333; stroke-width: 1.4; }
+.dg-dash { stroke-dasharray: 4 3; }
+.dg-blocked { stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 3 3; }
 .note { font-size: 13.5px; color: var(--ink-2); }
 .oneline { max-width: none; }
 
@@ -143,8 +161,6 @@ footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--rule);
 a { color: var(--brand-text); }
 
 @media (max-width: 720px) {
-  .flow { grid-template-columns: 1fr 1fr; }
-  .flow li { border-right: 0; border-bottom: 2px solid #ffffff; }
   .asks { grid-template-columns: 1fr; }
   h1 { font-size: 28px; }
 }
@@ -165,9 +181,6 @@ a { color: var(--brand-text); }
   table { font-size: 8.8pt; }
   th, td { padding: 5px 7px; }
   thead th { font-size: 7.8pt; }
-  .flow li { padding: 7px 8px; }
-  .flow .v { font-size: 8.5pt; }
-  .flow .k { font-size: 7pt; }
   .note, .fine, .mit { font-size: 8.5pt; }
   .rule-line, .cmd pre { font-size: 8pt; }
   .cmd { padding: 8px 10px; }
@@ -183,7 +196,7 @@ a { color: var(--brand-text); }
   footer { margin-top: 16px; font-size: 8pt; }
   .oneline { white-space: nowrap; }
   /* Keep small units whole; let sections flow across pages. */
-  tr, .callout, .flow, ol.risks li, .cmd, .rule-line, .masthead { break-inside: avoid; }
+  tr, .callout, .diagram, ol.risks li, .cmd, .rule-line, .masthead { break-inside: avoid; }
   h2, h3 { break-after: avoid; }
   .asks { break-inside: avoid; }
   a { color: var(--ink); text-decoration: none; }
@@ -212,6 +225,7 @@ a { color: var(--brand-text); }
         <li>Accept the software-protected signing key for the pilot, or require the Secure Enclave option.</li>
         <li>Approve the model, Qwen 3.6 27B (<code>qwen3.6:27b</code>), pinned to the exact weight digest recorded at provisioning (checked by <code>--expect-model</code>).</li>
         <li>Set the human-review sampling rate for released documents.</li>
+        <li>Choose output naming: opaque (default; no input names leave the machine) or original (folders and names kept, redacted).</li>
       </ol>
     </section>
     <section class="callout infra" aria-labelledby="infra-h">
@@ -227,16 +241,123 @@ a { color: var(--brand-text); }
 
   <section aria-labelledby="flow-h">
     <h2 id="flow-h">How a document moves</h2>
-    <ol class="flow">
-      <li class="edge"><span class="k">In</span><span class="v">SMB share, read-only</span></li>
-      <li><span class="k">Workspace</span><span class="v">RAM disk only</span></li>
-      <li><span class="k">Step 1</span><span class="v">Sandboxed: rules (regex, Presidio)</span></li>
-      <li><span class="k">Step 2</span><span class="v">Local LLM on masked text</span></li>
-      <li><span class="k">Step 3</span><span class="v">Sandboxed: redact the file</span></li>
-      <li><span class="k">Step 4</span><span class="v">Separate sandbox: re-scan</span></li>
-      <li class="edge"><span class="k">Out</span><span class="v">SMB share, after the whole run</span></li>
-    </ol>
-    <p class="oneline note">A document that fails the re-scan is quarantined; if the run aborts, nothing is released.</p>
+    <figure class="diagram">
+      <svg viewBox="0 0 820 384" role="img" aria-labelledby="dg-title dg-desc" xmlns="http://www.w3.org/2000/svg">
+        <title id="dg-title">How a document moves through surgic</title>
+        <desc id="dg-desc">Documents come from a read-only SMB share into an air-gapped Mac Studio whose firewall blocks everything except SMB to the share host. On a RAM disk they pass four steps: rules, local LLM, redaction and re-scan; steps 1, 3 and 4 run in sandboxed processes. Clean files are staged until the run finishes, then released to the output share with a signed manifest and closure record. A separate workstation runs surgic verify against the output share.</desc>
+        <defs>
+          <marker id="dg-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#333333"/>
+          </marker>
+        </defs>
+
+        <!-- Shares and outside world -->
+        <rect class="dg-share" x="0" y="128" width="92" height="88" rx="6"/>
+        <text class="dg-k" x="46" y="152" text-anchor="middle">INPUT</text>
+        <text class="dg-t" x="46" y="172" text-anchor="middle">SMB share</text>
+        <text class="dg-s" x="46" y="190" text-anchor="middle">read-only</text>
+
+        <rect class="dg-net" x="708" y="24" width="112" height="58" rx="6"/>
+        <text class="dg-t" x="764" y="48" text-anchor="middle">Internet</text>
+        <text class="dg-s" x="764" y="66" text-anchor="middle">and cloud</text>
+        <line class="dg-blocked" x1="694" y1="53" x2="708" y2="53"/>
+        <circle cx="701" cy="53" r="8" fill="#ffffff" stroke="var(--brand)" stroke-width="1.5"/>
+        <path d="M697 49 L705 57 M705 49 L697 57" stroke="var(--brand)" stroke-width="2" stroke-linecap="round"/>
+
+        <!-- Air gap -->
+        <rect class="dg-airgap" x="108" y="24" width="586" height="346" rx="10"/>
+        <text class="dg-k" x="122" y="44">AIR-GAPPED MAC STUDIO</text>
+        <text class="dg-s" x="122" y="60">Firewall blocks everything except SMB to the share host</text>
+
+        <!-- RAM disk -->
+        <rect class="dg-ram" x="122" y="72" width="558" height="192" rx="8"/>
+        <text class="dg-k dg-brand" x="134" y="90">RAM DISK · WIPED AT THE END</text>
+
+        <!-- Step 1 -->
+        <rect class="dg-step dg-sbx" x="134" y="100" width="128" height="120" rx="6"/>
+        <circle class="dg-num" cx="151" cy="118" r="10"/><text class="dg-numt" x="151" y="122" text-anchor="middle">1</text>
+        <text class="dg-h" x="167" y="122">Rules</text>
+        <text class="dg-s" x="144" y="144">Finds SSNs, names,</text>
+        <text class="dg-s" x="144" y="158">emails and IDs;</text>
+        <text class="dg-s" x="144" y="172">swaps in placeholders</text>
+        <rect class="dg-tag-sbx" x="144" y="196" width="108" height="16" rx="3"/>
+        <text class="dg-tag dg-ok" x="198" y="208" text-anchor="middle">SANDBOXED</text>
+
+        <!-- Step 2 -->
+        <rect class="dg-step" x="272" y="100" width="128" height="120" rx="6"/>
+        <circle class="dg-num" cx="289" cy="118" r="10"/><text class="dg-numt" x="289" y="122" text-anchor="middle">2</text>
+        <text class="dg-h" x="305" y="122">Local LLM</text>
+        <text class="dg-s" x="282" y="144">Flags clients, trade</text>
+        <text class="dg-s" x="282" y="158">secrets, context;</text>
+        <text class="dg-s" x="282" y="172">sees masked text only</text>
+        <rect class="dg-tag-plain" x="282" y="196" width="108" height="16" rx="3"/>
+        <text class="dg-tag" x="336" y="208" text-anchor="middle">LOOPBACK ONLY</text>
+
+        <!-- Step 3 -->
+        <rect class="dg-step dg-sbx" x="410" y="100" width="128" height="120" rx="6"/>
+        <circle class="dg-num" cx="427" cy="118" r="10"/><text class="dg-numt" x="427" y="122" text-anchor="middle">3</text>
+        <text class="dg-h" x="443" y="122">Redact</text>
+        <text class="dg-s" x="420" y="144">Removes content,</text>
+        <text class="dg-s" x="420" y="158">not just covers it;</text>
+        <text class="dg-s" x="420" y="172">nothing left hidden</text>
+        <rect class="dg-tag-sbx" x="420" y="196" width="108" height="16" rx="3"/>
+        <text class="dg-tag dg-ok" x="474" y="208" text-anchor="middle">SANDBOXED</text>
+
+        <!-- Step 4 -->
+        <rect class="dg-step dg-sbx" x="548" y="100" width="128" height="120" rx="6"/>
+        <circle class="dg-num" cx="565" cy="118" r="10"/><text class="dg-numt" x="565" y="122" text-anchor="middle">4</text>
+        <text class="dg-h" x="581" y="122">Re-scan</text>
+        <text class="dg-s" x="558" y="144">Re-reads the output</text>
+        <text class="dg-s" x="558" y="158">with every detector;</text>
+        <text class="dg-s" x="558" y="172">never sees the input</text>
+        <rect class="dg-tag-sbx" x="554" y="196" width="116" height="16" rx="3"/>
+        <text class="dg-tag dg-ok" x="612" y="208" text-anchor="middle">SEPARATE SANDBOX</text>
+
+        <!-- Step arrows -->
+        <line class="dg-flow" x1="92" y1="160" x2="132" y2="160" marker-end="url(#dg-arrow)"/>
+        <line class="dg-flow" x1="262" y1="160" x2="270" y2="160" marker-end="url(#dg-arrow)"/>
+        <line class="dg-flow" x1="400" y1="160" x2="408" y2="160" marker-end="url(#dg-arrow)"/>
+        <line class="dg-flow" x1="538" y1="160" x2="546" y2="160" marker-end="url(#dg-arrow)"/>
+
+        <!-- Outcomes -->
+        <line class="dg-flow" x1="612" y1="220" x2="612" y2="230" marker-end="url(#dg-arrow)"/>
+        <rect class="dg-pill-bad" x="134" y="232" width="266" height="22" rx="11"/>
+        <text class="dg-s" x="267" y="247" text-anchor="middle"><tspan class="dg-brand dg-b">✕ Any failure:</tspan> quarantined, never released</text>
+        <rect class="dg-pill-ok" x="410" y="232" width="266" height="22" rx="11"/>
+        <text class="dg-s" x="543" y="247" text-anchor="middle"><tspan class="dg-ok dg-b">✓ Clean:</tspan> staged until the whole run ends</text>
+
+        <!-- Signing and evidence -->
+        <rect class="dg-step" x="134" y="280" width="266" height="62" rx="6"/>
+        <text class="dg-h" x="148" y="302">Signing key</text>
+        <text class="dg-s" x="148" y="320">Keychain; sandboxed parsers</text>
+        <text class="dg-s" x="148" y="334">cannot reach it</text>
+        <rect class="dg-step" x="410" y="280" width="266" height="62" rx="6"/>
+        <text class="dg-h" x="424" y="302">Signed manifest + closure</text>
+        <text class="dg-s" x="424" y="320">Hashes, scan results, settings;</text>
+        <text class="dg-s" x="424" y="334">header-only packet captures</text>
+        <line class="dg-flow" x1="400" y1="311" x2="408" y2="311" marker-end="url(#dg-arrow)"/>
+
+        <!-- Release -->
+        <rect class="dg-share" x="708" y="128" width="112" height="104" rx="6"/>
+        <text class="dg-k" x="764" y="152" text-anchor="middle">OUTPUT</text>
+        <text class="dg-t" x="764" y="172" text-anchor="middle">SMB share</text>
+        <text class="dg-s" x="764" y="192" text-anchor="middle">redacted files</text>
+        <text class="dg-s" x="764" y="206" text-anchor="middle">manifests</text>
+        <text class="dg-s" x="764" y="220" text-anchor="middle">evidence</text>
+        <path class="dg-flow" d="M676 243 H688 V176 H706" marker-end="url(#dg-arrow)"/>
+        <path class="dg-flow" d="M676 311 H700 V214 H706" marker-end="url(#dg-arrow)"/>
+
+        <!-- Independent verification -->
+        <rect class="dg-verify" x="708" y="282" width="112" height="88" rx="6"/>
+        <text class="dg-k" x="764" y="302" text-anchor="middle">SEPARATE PC</text>
+        <text class="dg-mono" x="764" y="322" text-anchor="middle">surgic verify</text>
+        <text class="dg-s" x="764" y="340" text-anchor="middle">InfoSec's own key</text>
+        <text class="dg-s dg-ok dg-b" x="764" y="358" text-anchor="middle">✓ VERIFIED</text>
+        <line class="dg-flow dg-dash" x1="764" y1="232" x2="764" y2="280" marker-end="url(#dg-arrow)"/>
+        <text class="dg-s" x="770" y="262">reads</text>
+      </svg>
+      <figcaption class="fine">Green outline: sandboxed process (no network, no Keychain, no sudo). Dashed border: the air gap. Numbers: processing order.</figcaption>
+    </figure>
   </section>
 
   <section aria-labelledby="controls-h">
@@ -276,7 +397,7 @@ a { color: var(--brand-text); }
 
   <section aria-labelledby="verify-h">
     <h2 id="verify-h">How to verify a run</h2>
-    <p class="oneline">On a separate workstation, using your own copy of the public key:</p>
+    <p>An independent check: a workstation that never touched the documents, using InfoSec's own copy of the public key and only what is on the output share, confirms the run happened as claimed with every control in force. It doesn't rely on trusting the Mac Studio or its operator.</p>
     <div class="cmd"><pre>surgic verify manifests/&lt;run&gt;.manifest.json --pubkey pubkey.pem --outputs &lt;share&gt; \
     --closure evidence/&lt;ts&gt;/closure.json --expect-model &lt;sha256&gt;
 surgic verify evidence/&lt;ts&gt;/closure.json --pubkey pubkey.pem</pre></div>

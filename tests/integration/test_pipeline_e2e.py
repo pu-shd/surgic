@@ -245,3 +245,96 @@ def test_record_paths_off_by_default(corpus, regex_only, ocr, key_store):
     _, _, mpath, man = run_pipeline(corpus, regex_only, ocr, key_store, None)
     assert all("input_path" not in d for d in man["documents"])
     assert os.path.basename(mpath).endswith(".manifest.json")
+
+
+# ---------------------------------------------------------------- output naming
+def _named_run(tmp_path, regex_only, key_store, files: dict[str, str], analyzer=None):
+    from surgic.worker import DocWorker, InProcessClient, ScanWorker
+    cfg = make_cfg()
+    cfg.storage.output_names = "original"
+    for rel, text in files.items():
+        p = tmp_path / "in" / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    (tmp_path / "out").mkdir()
+    a = InProcessClient(DocWorker(cfg, regex_only, None))
+    p = Pipeline(cfg, MockBackend(cfg.llm, terms=terms()), signer=Signer(key_store), model_sha256="f" * 64,
+                 analyzer=analyzer(a) if analyzer else a, scanner=InProcessClient(ScanWorker(regex_only, None, None)))
+    mpath, man = p.run(str(tmp_path / "in"), str(tmp_path / "out"), str(tmp_path / "ws"))
+    run_dir = tmp_path / "out" / man["run_id"]
+    released = sorted(f.relative_to(run_dir).as_posix() for f in run_dir.rglob("*") if f.is_file())
+    return mpath, man, released
+
+
+def test_original_names_keep_tree_and_redact_names(tmp_path, regex_only, key_store):
+    body = "Our supplier Halvorsen Maritime renewal; SSN 219-09-9999.\n"
+    mpath, man, released = _named_run(tmp_path, regex_only, key_store, {
+        "Clients/Halvorsen Maritime/renewal memo.txt": body,   # folder named after a redacted value
+        "HR/SSN 219-09-9999 review.txt": body,                 # structured value in the file name
+        "notes.txt": "Quarterly notes, nothing sensitive.\n",
+    })
+    assert man["summary"]["clean"] == 3 and man["security"]["output_names"] == "original"
+    assert released == [
+        "Clients/REDACTED_VALUE/renewal memo.txt.redacted.txt",
+        "HR/SSN REDACTED_US_SSN review.txt.redacted.txt",
+        "notes.txt.redacted.txt",
+    ], released
+    for d in man["documents"]:
+        assert d["name_mode"] == "original"
+    raw = Path(mpath).read_text()
+    assert "Halvorsen" not in raw and "219-09-9999" not in raw
+    pem = (tmp_path / "out" / "manifests" / "pubkey.pem").read_bytes()
+    fails = verify_file(mpath, pem, str(tmp_path / "out"))
+    assert output_failures(fails) == [], fails
+    assert "original_names_released" in verify_file(mpath, pem, str(tmp_path / "out"), require_opaque_names=True)
+    # A file slipped into the released tree is caught.
+    (tmp_path / "out" / man["run_id"] / "HR" / "planted.txt").write_text("x")
+    assert "unlisted_output:HR/planted.txt" in verify_file(mpath, pem, str(tmp_path / "out"))
+
+
+def test_original_names_collision_falls_back_to_opaque(tmp_path, regex_only, key_store):
+    _, man, released = _named_run(tmp_path, regex_only, key_store, {
+        "a 219-09-9999.txt": "first\n", "a 219-09-8888.txt": "second\n"})
+    modes = sorted(d["name_mode"] for d in man["documents"])
+    assert modes == ["opaque_fallback", "original"]
+    fallback = next(d for d in man["documents"] if d["name_mode"] == "opaque_fallback")
+    assert f"{fallback['doc_id']}/{fallback['doc_id']}.redacted.txt" in released
+    assert "a REDACTED_US_SSN.txt.redacted.txt" in released
+
+
+def test_unsafe_name_from_worker_falls_back_to_opaque(tmp_path, regex_only, key_store):
+    """A (compromised) analyzer that leaves a redacted value in the name."""
+    class Leaky:
+        def __init__(self, inner):
+            self.inner, self.isolation = inner, inner.isolation
+
+        def start(self, w):
+            self.inner.start(w)
+
+        def stop(self):
+            self.inner.stop()
+
+        def restart(self):
+            pass
+
+        def call(self, op, **args):
+            if op == "redact_name":
+                return {"name": args["text"], "redactions": 0}
+            return self.inner.call(op, **args)
+
+    _, man, released = _named_run(tmp_path, regex_only, key_store,
+                                  {"SSN 219-09-9999.txt": "SSN 219-09-9999\n"}, analyzer=Leaky)
+    [d] = man["documents"]
+    assert d["name_mode"] == "opaque_fallback" and not any("219-09" in r for r in released)
+
+
+def test_verifier_rejects_output_path_traversal(tmp_path, key_store):
+    from fakes import evidence
+    s = Signer(key_store)
+    mp, cp, share = evidence.build(tmp_path, s)
+    man = json.loads(open(mp).read())
+    man["documents"][0]["output_dir"] = "../escape"
+    man.pop("signer")
+    from surgic.audit.manifest import write_signed
+    write_signed(man, mp, s)
+    assert "output_path_invalid:00001-abc" in verify_file(mp, s.public_pem(), str(share), cp)
