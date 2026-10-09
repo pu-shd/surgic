@@ -109,6 +109,27 @@ class DocWorker:
                 "files": list(result.files), "known_values": sorted({doc.text[s.start:s.end] for s in spans}),
                 "extra_spans": len(extra)}
 
+    def redact_name(self, text: str, values: list[str]) -> dict:
+        """Redact one path component (folder or file name): detector hits, plus
+        every value redacted from the document body. Separators commonly used
+        in file names are read as spaces so the detectors see words."""
+        import re
+
+        from .detect.spans import Span, apply_to_text
+        probe = re.sub(r"[_\-.+]", " ", text)  # same length: offsets carry over
+        spans = list(self.phase_a.find(probe))
+        low = text.lower()
+        for v in values:
+            v = v.strip().lower()
+            if len(v) < 3:
+                continue
+            i = low.find(v)
+            while i != -1:
+                spans.append(Span(i, i + len(v), "VALUE", "regex"))
+                i = low.find(v, i + 1)
+        return {"name": apply_to_text(text, spans, fmt="REDACTED_{cat}") if spans else text,
+                "redactions": len(spans)}
+
     def forget(self, doc_id: str) -> dict:
         self.docs.pop(doc_id, None)
         return {}
@@ -127,7 +148,7 @@ class ScanWorker:
         return {"passed": rep.passed, "public": rep.public(), "new_values": sorted(rep.new_values)}
 
 
-_OPS = {"info", "analyze", "render", "forget", "scan"}
+_OPS = {"info", "analyze", "render", "redact_name", "forget", "scan"}
 
 
 def dispatch(handler: Any, req: dict) -> dict:

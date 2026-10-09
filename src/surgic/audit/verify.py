@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import base64
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .manifest import CLOSURE_SCHEMA, SCHEMA, canonical, sha256_file
 from .pcap import PcapError, count_packets, max_caplen
@@ -52,14 +52,19 @@ def _load_signed(path: str, pubkey_pem: bytes) -> tuple[dict | None, bytes, list
 
 
 def verify_file(path: str, pubkey_pem: bytes, outputs_dir: str | None = None,
-                closure: str | None = None, expect_model: str | None = None) -> list[str]:
-    """Return a list of failures; empty means verified."""
+                closure: str | None = None, expect_model: str | None = None,
+                require_opaque_names: bool = False) -> list[str]:
+    """Return a list of failures; empty means verified. With
+    ``require_opaque_names`` a run that released original (redacted) folder
+    and file names fails."""
     obj, data, failures = _load_signed(path, pubkey_pem)
     if obj is None:
         return failures
     schema = obj.get("schema")
     if schema == SCHEMA:
         failures += _verify_manifest(obj, outputs_dir, expect_model)
+        if require_opaque_names and obj.get("security", {}).get("output_names", "opaque") != "opaque":
+            failures.append("original_names_released")
         if not closure:
             failures.append("closure_not_provided")
         else:
@@ -118,28 +123,39 @@ def _verify_manifest(obj: dict, outputs_dir: str | None, expect_model: str | Non
             failures.append(f"quarantined_output_present:{d['doc_id']}")
     if clean and not run_dir.is_dir():
         failures.append("run_outputs_missing")
-    if run_dir.is_dir():
-        known_dirs = {d["doc_id"] for d in docs}
-        for entry in sorted(run_dir.iterdir()):
-            if entry.name not in known_dirs:
-                failures.append(f"unlisted_output:{entry.name}")
+
+    # Every file under the run directory must be a listed output, in either
+    # layout: <doc_id>/<name> (opaque) or the redacted input tree (original).
+    expected: dict[str, tuple[str, dict]] = {}
     for doc_id, d in clean.items():
         if not d.get("outputs"):
             failures.append(f"clean_without_outputs:{doc_id}")
         if not d.get("postscan", {}).get("passed"):
             failures.append(f"clean_without_postscan:{doc_id}")
-        listed = {o["name"] for o in d.get("outputs", [])}
-        ddir = run_dir / doc_id
-        if ddir.is_dir():
-            for entry in sorted(ddir.iterdir()):
-                if entry.name not in listed:
-                    failures.append(f"unlisted_output:{doc_id}/{entry.name}")
+        out_dir = d.get("output_dir", doc_id)
         for o in d.get("outputs", []):
-            f = ddir / o["name"]
-            if not f.is_file() or f.is_symlink():
-                failures.append(f"output_missing:{doc_id}")
-            elif sha256_file(f) != o["sha256"]:
-                failures.append(f"output_hash_mismatch:{doc_id}")
+            rel = PurePosixPath(out_dir, o["name"]) if out_dir else PurePosixPath(o["name"])
+            if rel.is_absolute() or ".." in rel.parts or not rel.parts:
+                failures.append(f"output_path_invalid:{doc_id}")
+                continue
+            expected[rel.as_posix()] = (doc_id, o)
+    dirs = {p.as_posix() for rel in expected for p in PurePosixPath(rel).parents if p.as_posix() != "."}
+    if run_dir.is_dir():
+        reported: list[str] = []
+        for entry in sorted(run_dir.rglob("*")):
+            rel = entry.relative_to(run_dir).as_posix()
+            if any(rel.startswith(r + "/") for r in reported):
+                continue
+            ok = rel in dirs if entry.is_dir() and not entry.is_symlink() else rel in expected
+            if not ok:
+                failures.append(f"unlisted_output:{rel}")
+                reported.append(rel)
+    for rel, (doc_id, o) in expected.items():
+        f = run_dir / rel
+        if not f.is_file() or f.is_symlink():
+            failures.append(f"output_missing:{doc_id}")
+        elif sha256_file(f) != o["sha256"]:
+            failures.append(f"output_hash_mismatch:{doc_id}")
     return failures
 
 

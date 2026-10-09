@@ -60,6 +60,8 @@ class DocRecord:
     input_path: str | None = None
     status: str = "pending"
     reason: str = ""
+    output_dir: str = ""   # relative to <share>/<run_id>/; "" until released
+    name_mode: str = ""    # "opaque" | "original" | "opaque_fallback" (clean documents)
     outputs: list[dict] = field(default_factory=list)
     phase_a: dict[str, int] = field(default_factory=dict)
     phase_b: dict = field(default_factory=dict)
@@ -69,9 +71,10 @@ class DocRecord:
     rescans: int = 0
     postscan: dict = field(default_factory=dict)
     staged: list[str] = field(default_factory=list)  # RAM-disk copies awaiting release
+    target_dir: str = ""                             # planned output_dir (set when staged)
 
     def public(self) -> dict:
-        d = {k: v for k, v in self.__dict__.items() if k != "staged"}
+        d = {k: v for k, v in self.__dict__.items() if k not in ("staged", "target_dir")}
         if d["input_path"] is None:
             d.pop("input_path")
         return d
@@ -192,7 +195,7 @@ class Pipeline:
                     rec = self._new_record(i, p, input_dir)
                     records.append(rec)
                     if rec.status == "pending":
-                        self._process(rec, p, work_root)
+                        self._process(rec, p, work_root, p.relative_to(input_dir))
                     self.backend.reset_context()
                 self.backend.unload()
                 if self.backend.is_loaded():
@@ -247,7 +250,7 @@ class Pipeline:
         return rec
 
     # ------------------------------------------------------------------
-    def _process(self, rec: DocRecord, src: Path, work_root: Path) -> None:
+    def _process(self, rec: DocRecord, src: Path, work_root: Path, rel: Path | None = None) -> None:
         wd = work_root / rec.doc_id
         (wd / "in").mkdir(parents=True)
         known: set[str] = set()
@@ -305,10 +308,12 @@ class Pipeline:
                 rec.status, rec.reason = "quarantined", "postscan_failed"
                 return
 
+            target_dir, names = self._plan_names(rec, rel, files, known)
             stage = work_root / "_release" / rec.doc_id
             stage.mkdir(parents=True)
+            rec.target_dir = target_dir
             for f in files:
-                target = stage / f.name
+                target = stage / names[f.name]
                 shutil.copyfile(f, target)
                 if sha256_file(f) != sha256_file(target):
                     raise SafeError("output_verify_failed")
@@ -340,6 +345,46 @@ class Pipeline:
             log_event("document", doc_id=rec.doc_id, status=rec.status, reason=rec.reason or None,
                       regions=rec.regions)
 
+    def _plan_names(self, rec: DocRecord, rel: Path | None, files: list[Path],
+                    known: set[str]) -> tuple[str, dict[str, str]]:
+        """Output directory (relative to the run directory) and released file
+        names. Opaque: <doc_id>/<doc_id>.redacted.<ext>. Original: the input's
+        folders and name, each component redacted by the analyzer, e.g.
+        Clients/REDACTED_VALUE/memo.pdf.redacted.pdf. A name that cannot be
+        made safe falls back to the opaque layout for that document."""
+        opaque = {f.name: f.name for f in files}
+        if self.cfg.storage.output_names != "original" or rel is None:
+            rec.name_mode = "opaque"
+            return rec.doc_id, opaque
+        values = sorted(v for v in known if v.strip())
+        parts = []
+        for comp in rel.parts:
+            r = self.analyzer.call("redact_name", text=comp, values=values)
+            name = r.get("name")
+            if not self._safe_component(name, values):
+                rec.name_mode = "opaque_fallback"
+                return rec.doc_id, opaque
+            parts.append(name)
+        base = parts[-1]
+        names = {}
+        for f in files:
+            ext = f.name.rsplit(".redacted.", 1)[1]
+            names[f.name] = f"{base}.redacted.{ext}"
+        if len(set(names.values())) != len(names) or any(len(n.encode()) > 255 for n in names.values()):
+            rec.name_mode = "opaque_fallback"
+            return rec.doc_id, opaque
+        rec.name_mode = "original"
+        return "/".join(parts[:-1]), names
+
+    @staticmethod
+    def _safe_component(name: Any, values: list[str]) -> bool:
+        if not isinstance(name, str) or not name or name in (".", "..") or name.startswith("."):
+            return False
+        if "/" in name or "\x00" in name or len(name.encode()) > 200:
+            return False
+        low = name.lower()
+        return not any(len(v.strip()) >= 4 and v.strip().lower() in low for v in values)
+
     @staticmethod
     def _outputs(r: dict, doc_id: str, out_dir: Path) -> list[Path]:
         """Worker-reported output paths: must be our own names, regular files,
@@ -357,13 +402,32 @@ class Pipeline:
 
     def _release(self, records: list[DocRecord], release_dir: Path) -> None:
         """Copy staged outputs to the share and verify every byte arrived."""
+        taken: set[str] = set()
         for rec in records:
             if rec.status != "clean":
                 continue
-            dest = release_dir / rec.doc_id
-            dest.mkdir(parents=True, exist_ok=False)
+            planned = [f"{rec.target_dir}/{Path(f).name}".lstrip("/") for f in rec.staged]
+            if rec.name_mode == "original" and any(p in taken for p in planned):
+                # Two inputs whose names redact to the same output name.
+                rec.name_mode, rec.target_dir = "opaque_fallback", rec.doc_id
+                renamed = []
+                for f in rec.staged:
+                    ext = Path(f).name.rsplit(".redacted.", 1)[1]
+                    new = Path(f).with_name(f"{rec.doc_id}.redacted.{ext}")
+                    os.replace(f, new)
+                    renamed.append(str(new))
+                rec.staged = renamed
+            rec.output_dir = rec.target_dir
+            dest = release_dir / rec.output_dir if rec.output_dir else release_dir
+            if rec.name_mode == "original":
+                dest.mkdir(parents=True, exist_ok=True)
+            else:
+                dest.mkdir(parents=True, exist_ok=False)
             for f in rec.staged:
                 target = dest / Path(f).name
+                if target.exists() or not is_under(str(target), str(release_dir)):
+                    raise SafeError("output_verify_failed")
+                taken.add(f"{rec.output_dir}/{target.name}".lstrip("/"))
                 shutil.copyfile(f, target)
                 h_local, h_remote = sha256_file(f), sha256_file(target)
                 if h_local != h_remote:

@@ -108,7 +108,8 @@ def cmd_verify(args) -> int:
     from .audit.verify import verify_file
     with open(args.pubkey, "rb") as f:
         pem = f.read()
-    failures = verify_file(args.file, pem, args.outputs, args.closure, args.expect_model)
+    failures = verify_file(args.file, pem, args.outputs, args.closure, args.expect_model,
+                           require_opaque_names=args.require_opaque_names)
     if failures:
         for x in failures:
             print("FAIL", x)
@@ -148,6 +149,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--outputs", help="output share root (required for a manifest)")
     p.add_argument("--closure", help="closure.json of the airgap session (required for a manifest)")
     p.add_argument("--expect-model", help="model SHA-256 InfoSec approved; must match the manifest")
+    p.add_argument("--require-opaque-names", action="store_true",
+                   help="fail if the run released original (redacted) folder and file names")
     p.set_defaults(fn=cmd_verify)
     return ap
 

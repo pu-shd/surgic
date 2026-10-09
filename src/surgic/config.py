@@ -50,6 +50,11 @@ class StorageConfig(BaseModel):
     output_mount: str = "~/.surgic/mnt/out"
     state_file: str = "~/.surgic/state.json"   # device names/pids/pf token only
     record_input_paths: bool = False  # file names can themselves be sensitive
+    # "opaque": outputs land in <share>/<run_id>/<doc_id>/ with generated names.
+    # "original": the input folder tree and file names are kept, after every
+    # path component is passed through the detectors and stripped of any value
+    # redacted from the document itself (see docs/INFOSEC.md).
+    output_names: Literal["opaque", "original"] = "opaque"
 
     @field_validator("input_mount", "output_mount", "state_file")
     @classmethod
@@ -158,6 +163,8 @@ class Config(BaseModel):
             "smb_interface_bound": bool(self.network.smb_interface),
             "allowed_listeners": len(self.preflight.allowed_listeners),
             "extra_patterns_file": bool(self.detect.patterns_file),
+            "output_names": self.storage.output_names,
+            "record_input_paths": self.storage.record_input_paths,
         }
 
     @classmethod
