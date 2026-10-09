@@ -1,6 +1,7 @@
 # surgic: security review brief
 
-Printable version: [PDF](brief/surgic-security-brief.pdf) · [HTML](brief/surgic-security-brief.html)
+Printable version: [PDF](brief/surgic-security-brief.pdf) · [HTML](brief/surgic-security-brief.html) ·
+Mechanics in detail: [How a document is processed](HOW_IT_WORKS.md)
 
 **What it is.** A pipeline that redacts restricted documents with a local AI
 model on one air-gapped Mac Studio. No cloud services are involved. Documents
