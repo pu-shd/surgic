@@ -82,6 +82,13 @@ class LLMConfig(BaseModel):
     temperature: float = 0.0
     max_retries: int = Field(2, ge=0, le=5)
     batch_size: int = Field(1, ge=1)  # model unloaded after every batch
+    # Steering defenses (llm/guard.py). Canaries: one synthetic secret per
+    # chunk; a miss is retried, then the document is quarantined.
+    canaries: bool = True
+    canary_retries: int = Field(1, ge=0, le=3)
+    # Injection tripwire hit: "quarantine" the document, or release it
+    # flagged for human "review" (recorded in the manifest).
+    injection_policy: Literal["quarantine", "review"] = "quarantine"
     request_timeout_s: float = 600.0
     server_binary: str = ""        # override for llama-server / mlx_lm.server / ollama
     ollama_models_dir: str = "~/.ollama/models"  # weights are hashed from here, not asked of the server
@@ -164,6 +171,8 @@ class Config(BaseModel):
             "allowed_listeners": len(self.preflight.allowed_listeners),
             "extra_patterns_file": bool(self.detect.patterns_file),
             "output_names": self.storage.output_names,
+            "llm_canaries": self.llm.canaries,
+            "injection_policy": self.llm.injection_policy,
             "record_input_paths": self.storage.record_input_paths,
         }
 

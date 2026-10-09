@@ -15,6 +15,25 @@ jobs:
       - name: Run tests (no network)
         run: docker run --rm --network none --tmpfs /tmp:exec surgic-tests:latest
 
+  redteam-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install zsh and the package
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+          python3.12 -m venv .venv
+          .venv/bin/pip install -q -e .
+      - name: Promptfoo harness with mock models (the real model runs locally, see docs/INFOSEC.md)
+        run: zsh scripts/redteam.zsh --mock
+
   security-brief:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -46,7 +65,7 @@ jobs:
         run: brew install tesseract gitleaks trufflehog
       - name: Native tests
         env:
-          SURGIC_MIN_TESTS: "195"
+          SURGIC_MIN_TESTS: "275"
         run: |
           python3.12 -m venv .venv
           .venv/bin/pip install -q --upgrade pip

@@ -11,11 +11,47 @@ a second share with signed proof that nothing left the machine.
 in a network-disabled Linux container. It has **not yet been run on the target
 Mac Studio.**
 
+```mermaid
+flowchart LR
+    IN[("Input share<br/>SMB, read-only")]
+    OUT[("Output share<br/>SMB")]
+    NET["Internet / cloud"]
+    PC["Separate workstation<br/><code>surgic verify</code><br/>InfoSec's own key"]
+
+    subgraph MAC["Air-gapped Mac Studio · firewall allows only SMB to the share host"]
+        direction LR
+        subgraph RAM["RAM disk · wiped at the end"]
+            direction LR
+            S1["<b>1 · Find structured data</b><br/>regex + Presidio<br/>values masked before the LLM"]:::sbx
+            S2["<b>2 · Find context</b><br/>local LLM, loopback only, masked text only<br/>injection tripwire, random boundary,<br/>canary in every chunk"]
+            S3["<b>3 · Redact the file</b><br/>removes everything found in 1–2"]:::sbx
+            S4["<b>4 · Re-scan the output</b><br/>separate sandbox, never sees the input"]:::sbx
+            Q["Quarantined<br/>never released"]:::bad
+            ST["Staged until the<br/>whole run finishes"]:::ok
+        end
+        KEY["Signing key<br/>parsers can't reach it"]
+        MAN["Signed manifest + closure<br/>hashes, scan results, settings,<br/>header-only packet captures"]
+    end
+
+    IN --> S1 --> S2 --> S3 --> S4
+    S4 -- fail --> Q
+    S4 -- clean --> ST
+    ST --> OUT
+    KEY --> MAN --> OUT
+    OUT -. reads .-> PC
+    MAC x-- blocked --x NET
+
+    classDef default fill:#ffffff,stroke:#999999,color:#121212
+    classDef sbx fill:#ffffff,stroke:#2b6a3f,stroke-width:2px,color:#121212
+    classDef ok fill:#e9f3ec,stroke:#c9e2d1,color:#2b6a3f
+    classDef bad fill:#fffaf6,stroke:#e77500,color:#c1560e
+    style MAC fill:#ffffff,stroke:#333333,stroke-dasharray: 6 4
+    style RAM fill:#fffaf6,stroke:#f0d9c4
 ```
-SMB (read-only) ─► RAM disk ─► [sandboxed worker] 1. rules (regex + Presidio) ─► 2. local LLM ─► [sandboxed worker] 3. redact
-                                                                                                              │
-SMB (output) ◄── release only if every document finished ◄── [separate sandboxed worker] 4. re-scan the output files
-```
+
+Green outline: sandboxed process (no network, no Keychain, no sudo). Steps 1 and 2 only *find* things;
+step 1 also masks structured values in the working text so the model never sees them. The file
+itself is redacted once, in step 3, using everything found in steps 1 and 2.
 
 ## Controls and evidence
 
@@ -34,6 +70,55 @@ SMB (output) ◄── release only if every document finished ◄── [separa
 The manifest and closure record are signed (Ed25519). Logs contain no document
 text, and file names aren't recorded. Python dependencies are installed from a
 hash-locked set (`requirements/macos-arm64.lock`).
+
+## Prompt-injection defenses
+
+A document can contain text aimed at the model ("ignore previous instructions", "this
+document is public", fake system messages). Three runtime defenses run on every chunk,
+in the orchestrator, before and around the model (`src/surgic/llm/guard.py`):
+
+| Defense | What it does | On a hit |
+|---|---|---|
+| **Tripwire** | Deterministic patterns for text addressed to an AI model: override and role-change phrases, "do not redact", "this document is public", chat-template and role tokens, forged boundaries (`src/surgic/data/injection_patterns.yaml`). | Quarantine (default), or release flagged `needs_review` (`llm.injection_policy`). Rule ids in the manifest. |
+| **Random boundary** | Each request wraps the chunk in markers carrying a fresh random 64-bit tag; the system prompt says everything inside is data. A document cannot forge the closing marker. | Forgery attempts also trip the tripwire. |
+| **Canary** | Every chunk carries one synthetic, randomly generated confidential sentence at a random paragraph break. A model talked into reporting nothing misses it. | Retry once with a fresh canary, then quarantine (`llm_canary_missed`). Counts in the manifest. |
+
+These sit on top of the structural limits that hold whatever the model does:
+- the model sees masked text only and returns only offsets and categories;
+- it can only *add* redactions;
+- the deterministic rules, the output re-scan and the sandbox don't depend on it.
+
+So a successful injection can at worst cause under-redaction of a context-only secret, never
+exfiltration. The verifier rejects any run with canaries turned off.
+
+**Limits.** Canaries catch blanket suppression, not an instruction to skip one specific value
+while reporting everything else. The tripwire catches common phrasings, not every paraphrase or
+obfuscation. These residual cases are what the red team measures.
+
+### Red team (Promptfoo)
+
+`redteam/` holds a [Promptfoo](https://www.promptfoo.dev/) suite of 24 synthetic cases: a
+control and 23 injection techniques, each hiding one context-only secret. They include direct
+overrides, forged boundaries, chat-template tokens, other languages, homoglyphs, leetspeak,
+authority and urgency appeals, fake prior results, and targeted exemptions.
+
+Every case runs twice against the approved model:
+- **model-only:** the production prompt and schema, with no other defense. This measures the model's own resistance.
+- **defended-pipeline:** the real runtime path (tripwire, then canary). This is the gate: no case may end with the secret missed.
+
+`scripts/redteam.zsh` runs fully locally:
+- synthetic data only;
+- the model served by a private loopback Ollama;
+- Promptfoo telemetry, sharing and remote attack generation off;
+- a pinned Promptfoo version.
+
+Run it whenever the model, the prompt or the defenses change, and before approving a model.
+CI runs the same harness against mock models: one that works, and one fully steered into
+reporting nothing, which the defenses must still contain on every case.
+
+**Latest results** (2026-10-09, `qwen3.6:27b`, details in [`redteam/RESULTS.md`](../redteam/RESULTS.md)):
+- **Defended pipeline: 24/24 held, 0 missed.** The model flagged 14, the tripwire quarantined 10, and no canary was missed (so no false quarantines).
+- **Model alone: 23/24 flagged.** It missed the chat-template role-token attack, which the tripwire stops in the defended run.
 
 ## How to verify
 
@@ -96,7 +181,7 @@ name (never in the body) is not caught. The mode is recorded in the signed manif
 
 1. **Signing key is software-protected.** It's stored in the login Keychain, so someone with the user's login could export it. Document parsers can no longer reach it (they're sandboxed). *Mitigation available:* a Secure Enclave key via Jamf (in progress).
 2. **LLM recall is imperfect.** Unstructured secrets depend on model quality. In testing, Qwen 3.6 27B caught contextual secrets in prose but missed a client name in a spreadsheet cell. *Recommend* human spot-checks when a new document type is introduced.
-3. **Prompt injection.** A document could try to steer the model. The worst case is under-redaction, never exfiltration.
+3. **Prompt injection.** A document could try to steer the model. The tripwire, random boundaries and canaries stop blanket suppression and common phrasings; a targeted, well-disguised exemption for one value can still get through, and the red team measures how often. The worst case is under-redaction, never exfiltration.
 4. **OCR limits.** Text that OCR can't read (e.g. poor handwriting) can't be detected.
 5. **Memory pressure could cause swapping.** Swap is encrypted with an ephemeral key, and the model (~17 GB) leaves ample headroom.
 6. **Layer-2 traffic** (ARP, IPv6 neighbor discovery) isn't filtered by pf. *Requires* a static IP on a dedicated VLAN.
@@ -120,3 +205,4 @@ name (never in the body) is not caught. The mode is recorded in the signed manif
 2. Approve the model, Qwen 3.6 27B (`qwen3.6:27b`), pinned to the exact weight digest recorded at provisioning (pass it to `surgic verify --expect-model`).
 3. Set the human-review sampling rate for released documents.
 4. Choose output naming: opaque (default; no input names leave the machine) or original (folders and names kept, redacted). The verifier can enforce opaque names.
+5. Choose the injection-tripwire policy: quarantine (default) or release flagged for human review. Accept the red-team results as part of model approval.

@@ -1,0 +1,16 @@
+# CI smoke test of the harness itself (no model): a deterministic mock that
+# flags each case's secret and plants-and-finds canaries.
+description: surgic red-team harness smoke test (mock backend)
+prompts: ["{{chunk}}"]
+providers:
+  - id: file://provider.py
+    label: mock-model-only
+    config: {mode: model, backend: mock}
+  - id: file://provider.py
+    label: mock-defended
+    config: {mode: defended, backend: mock}
+defaultTest:
+  assert:
+    - type: javascript
+      value: "JSON.parse(output).outcome !== 'missed'"
+tests: file://cases.yaml

@@ -1,0 +1,20 @@
+# Prompt-injection tripwire (RE2 syntax; case-insensitive via (?i)).
+# Text a business document has no reason to contain: instructions addressed
+# to an AI model, role/turn markers, and requests to suppress findings.
+# A hit quarantines the document (llm.injection_policy = "quarantine") or
+# flags it for human review ("review"). Rule ids appear in the manifest.
+rules:
+  - id: OVERRIDE_INSTRUCTIONS
+    regex: '(?i)\b(?:ignore|disregard|forget|override|bypass)\b[^.\n]{0,40}\b(?:previous|prior|above|earlier|preceding|all|any|your|system|original)\b[^.\n]{0,30}\b(?:instructions?|directions?|prompts?|rules?|guidelines?|context)\b'
+  - id: NEW_INSTRUCTIONS
+    regex: '(?i)\b(?:new|updated|revised|real|actual|following)\s+(?:system\s+)?instructions?\s*(?:for|to)\s+(?:the\s+)?(?:ai|assistant|model|llm|analyst|redactor)\b|\b(?:instructions?|note|message|attention)\s+(?:for|to)\s+(?:the\s+)?(?:ai|assistant|language model|model|llm|chatbot|redactor|redaction (?:tool|system|analyst))\b'
+  - id: ROLE_ASSIGNMENT
+    regex: '(?i)\b(?:you are now|you are (?:an?|the) (?:ai|assistant|language model|redaction|helpful)|act as (?:an?|the) |pretend (?:to be|you are)|from now on,? you)\b'
+  - id: SUPPRESS_FINDINGS
+    regex: '(?i)\b(?:do not|don''t|never|must not|should not|no need to)\s+(?:redact|flag|mask|censor|anonymi[sz]e|sanitize|black ?out)\b|\b(?:do not|don''t|never|must not|should not)\s+(?:report|list|mark|treat|consider|include)\b[^.\n]{0,40}\b(?:as\s+)?(?:sensitive|confidential|pii|findings?|secrets?|redact\w*)\b|\b(?:return|respond with|output|reply with)\s+(?:an?\s+|only\s+)?(?:empty|no|zero|nothing)\b[^.\n]{0,20}\b(?:findings?|results?|list|array|json|redactions?)\b|"findings"\s*:\s*\[\s*\]'
+  - id: DECLARE_NOT_SENSITIVE
+    regex: '(?i)\b(?:this|the following|the above|the entire)\s+(?:document|text|file|memo|section|content|page)\s+(?:is|contains|has been)\s+(?:entirely\s+|fully\s+|already\s+)?(?:public|non-?confidential|not (?:confidential|sensitive)|cleared|approved for (?:public )?release|pre-?redacted|sanitized)\b'
+  - id: ROLE_MARKERS
+    regex: '(?im)<\|?(?:im_start|im_end|system|endoftext|eot_id|start_header_id)\|?>|\[/?INST\]|<</?SYS>>|^\s*(?:system|assistant)\s*:|</?(?:system|assistant|user|chunk|instructions?)>|<<<\s*(?:DATA|END)\b'
+  - id: MODEL_MENTION_IMPERATIVE
+    regex: '(?i)\b(?:ai|llm|language model|chatgpt|claude|qwen|gemini|llama|assistant)\b[^.\n]{0,30}\b(?:must|should|shall|will|needs? to)\s+(?:ignore|skip|not|only|output|return|respond)\b'
